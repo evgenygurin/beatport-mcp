@@ -48,24 +48,49 @@ PerPage = Annotated[int, Field(ge=1, le=150, description="Results per page")]
 
 @mcp.tool
 async def search_tracks(
-    query: Annotated[str, Field(description="Free-text search, e.g. 'strobe deadmau5'")] = "",
-    artist_name: Annotated[str | None, Field(description="Filter by exact artist name")] = None,
-    genre_id: Annotated[
-        int | None, Field(description="Filter by Beatport genre id (see list_genres)")
-    ] = None,
-    bpm_low: Annotated[int | None, Field(description="Minimum BPM")] = None,
-    bpm_high: Annotated[int | None, Field(description="Maximum BPM")] = None,
+    query: Annotated[str, Field(description="Free-text search, e.g. 'strobe deadmau5'")],
     page: Page = 1,
     per_page: PerPage = 25,
 ) -> Any:
-    """Search tracks in the Beatport catalog."""
+    """Relevance search for tracks by free text (title, artist, remixer …)."""
+    data = await get_client().get(
+        "/catalog/search/", q=query, type="tracks", page=page, per_page=per_page
+    )
+    return fmt.slim_page(data, fmt.slim_track)
+
+
+@mcp.tool
+async def filter_tracks(
+    name: Annotated[str | None, Field(description="Track title filter")] = None,
+    artist_name: Annotated[str | None, Field(description="Filter by artist name")] = None,
+    genre_id: Annotated[
+        int | None, Field(description="Filter by Beatport genre id (see list_genres)")
+    ] = None,
+    bpm_low: Annotated[int | None, Field(description="Minimum BPM (inclusive)")] = None,
+    bpm_high: Annotated[int | None, Field(description="Maximum BPM (inclusive)")] = None,
+    order_by: Annotated[
+        str | None,
+        Field(description="Sort field, e.g. '-publish_date' (newest first) or 'bpm'"),
+    ] = None,
+    page: Page = 1,
+    per_page: PerPage = 25,
+) -> Any:
+    """Filter the track catalog by structured criteria (title, artist, genre, BPM range).
+
+    Use search_tracks for free-text relevance search; this tool is for precise
+    filtering, e.g. all Drum & Bass 170-175 BPM, or every track named 'Strobe'
+    by deadmau5.
+    """
+    bpm = None
+    if bpm_low is not None or bpm_high is not None:
+        bpm = f"{bpm_low if bpm_low is not None else 1}:{bpm_high if bpm_high is not None else 999}"
     data = await get_client().get(
         "/catalog/tracks/",
-        q=query or None,
+        name=name,
         artist_name=artist_name,
         genre_id=genre_id,
-        bpm_low=bpm_low,
-        bpm_high=bpm_high,
+        bpm=bpm,
+        order_by=order_by,
         page=page,
         per_page=per_page,
     )
@@ -85,20 +110,13 @@ async def get_track(track_id: int) -> Any:
 
 @mcp.tool
 async def search_releases(
-    query: Annotated[str, Field(description="Free-text search over release names")] = "",
-    artist_name: Annotated[str | None, Field(description="Filter by artist name")] = None,
-    label_name: Annotated[str | None, Field(description="Filter by label name")] = None,
+    query: Annotated[str, Field(description="Release name / free-text search")],
     page: Page = 1,
     per_page: PerPage = 25,
 ) -> Any:
-    """Search releases (albums/EPs/singles) in the Beatport catalog."""
+    """Relevance search for releases (albums/EPs/singles)."""
     data = await get_client().get(
-        "/catalog/releases/",
-        q=query or None,
-        artist_name=artist_name,
-        label_name=label_name,
-        page=page,
-        per_page=per_page,
+        "/catalog/search/", q=query, type="releases", page=page, per_page=per_page
     )
     return fmt.slim_page(data, fmt.slim_release)
 
@@ -130,7 +148,9 @@ async def search_artists(
     per_page: PerPage = 25,
 ) -> Any:
     """Search artists by name."""
-    data = await get_client().get("/catalog/artists/", q=query, page=page, per_page=per_page)
+    data = await get_client().get(
+        "/catalog/search/", q=query, type="artists", page=page, per_page=per_page
+    )
     return fmt.slim_page(data, fmt.slim_artist)
 
 
@@ -157,7 +177,9 @@ async def search_labels(
     per_page: PerPage = 25,
 ) -> Any:
     """Search record labels by name."""
-    data = await get_client().get("/catalog/labels/", q=query, page=page, per_page=per_page)
+    data = await get_client().get(
+        "/catalog/search/", q=query, type="labels", page=page, per_page=per_page
+    )
     return fmt.slim_page(data, fmt.slim_label)
 
 
@@ -194,7 +216,7 @@ async def search_charts(
 ) -> Any:
     """Search DJ charts."""
     data = await get_client().get(
-        "/catalog/charts/", q=query or None, genre_id=genre_id, page=page, per_page=per_page
+        "/catalog/charts/", name=query or None, genre_id=genre_id, page=page, per_page=per_page
     )
     return fmt.slim_page(data, fmt.slim_chart)
 

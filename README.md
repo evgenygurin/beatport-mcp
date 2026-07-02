@@ -2,7 +2,7 @@
 
 MCP server for the [Beatport API v4](https://api.beatport.com/v4/docs/), built with
 [FastMCP v3](https://gofastmcp.com). Authenticates with a regular Beatport account
-username/password (OAuth2 password grant) — no API key application needed.
+username/password — no API key application needed.
 
 Search the Beatport catalog (tracks, releases, artists, labels), browse genres and DJ
 charts, and manage your playlists from Claude or any other MCP client.
@@ -11,7 +11,8 @@ charts, and manage your playlists from Claude or any other MCP client.
 
 | Tool | Description |
 | --- | --- |
-| `search_tracks` | Search tracks (free text, artist, genre, BPM range) |
+| `search_tracks` | Relevance search for tracks by free text |
+| `filter_tracks` | Structured catalog filter (title, artist, genre, BPM range) |
 | `get_track` | Track details by id |
 | `search_releases` / `get_release` / `get_release_tracks` | Releases and their track lists |
 | `search_artists` / `get_artist_tracks` | Artists and their tracks |
@@ -76,24 +77,30 @@ Claude Code: `claude mcp add beatport -e BEATPORT_USERNAME=... -e BEATPORT_PASSW
 
 ## How authentication works
 
-Beatport's token endpoint `POST https://api.beatport.com/v4/auth/o/token/` accepts the
-OAuth2 **password grant**:
+Only a Beatport username and password are needed. Under the hood the server first
+tries the OAuth2 **password grant** on `POST /v4/auth/o/token/` (Beatport currently
+answers `unauthorized_client` for public clients, but it is kept for users with their
+own `BEATPORT_CLIENT_ID`), then falls back to the flow Beatport's own docs frontend
+uses — verified working:
 
 ```
-grant_type=password&username=<email>&password=<password>&client_id=<client_id>
+1. POST /v4/auth/login/            {"username": …, "password": …}   → session cookie
+2. GET  /v4/auth/o/authorize/      ?response_type=code&client_id=…
+                                   &redirect_uri=…/auth/o/post-message/ → 302 ?code=…
+3. POST /v4/auth/o/token/          grant_type=authorization_code       → tokens
 ```
 
-and returns `access_token` (Bearer, ~10 h) plus `refresh_token`. Refreshing uses
-`grant_type=refresh_token` and requires a `client_id`; by default this project uses the
-public client_id of Beatport's own Swagger docs frontend (the same approach as
+The result is an `access_token` (Bearer, ~10 h) plus `refresh_token`. Refreshing uses
+`grant_type=refresh_token` with a `client_id`; by default this project uses the public
+client_id of Beatport's own Swagger docs frontend (the same approach as
 [beets-beatport4](https://github.com/Samik081/beets-beatport4) and other open-source
-clients). You can override it with `BEATPORT_CLIENT_ID`.
+clients). Override it with `BEATPORT_CLIENT_ID`.
 
 Tokens are cached in `~/.beatport-mcp/token.json` (chmod 600) and refreshed
 automatically; a 401 triggers one transparent re-auth + retry.
 
-A standalone ~80-line example of the raw flow lives in
-[`examples/password_grant.py`](examples/password_grant.py); using the packaged async
+A standalone ~100-line example of the raw flow lives in
+[`examples/login_flow.py`](examples/login_flow.py); using the packaged async
 client is shown in [`examples/use_client.py`](examples/use_client.py).
 
 ## OpenAPI

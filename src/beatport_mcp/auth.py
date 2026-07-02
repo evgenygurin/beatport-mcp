@@ -1,11 +1,21 @@
-"""OAuth2 authentication against the Beatport API v4.
+"""OAuth2 authentication against the Beatport API v4 using username/password.
 
-Beatport's token endpoint (``/v4/auth/o/token/``) supports the resource-owner
-password grant: POST ``grant_type=password`` with a Beatport account username
-and password and it returns a bearer ``access_token`` plus a
-``refresh_token``. Refreshing requires a ``client_id``; the public client_id
-of Beatport's own API docs frontend is used by default (see ``config.py``).
+Two flows are attempted, in order:
 
+1. **Password grant** — single POST to ``/v4/auth/o/token/`` with
+   ``grant_type=password``. Beatport has disabled this grant for the public
+   docs client (returns ``unauthorized_client``), but it is kept first in
+   case a user supplies their own ``BEATPORT_CLIENT_ID`` that allows it.
+
+2. **Session login + authorization code** (the flow Beatport's own docs
+   frontend uses, verified working):
+
+   - ``POST /v4/auth/login/`` with the username/password → session cookie
+   - ``GET /v4/auth/o/authorize/?response_type=code&client_id=…&redirect_uri=…``
+     → 302 redirect whose ``code`` query param is the authorization code
+   - ``POST /v4/auth/o/token/`` with ``grant_type=authorization_code``
+
+Refreshing uses ``grant_type=refresh_token`` with the same ``client_id``.
 Tokens are cached on disk (default ``~/.beatport-mcp/token.json``) so
 restarts don't re-send the password.
 """
@@ -15,10 +25,15 @@ from __future__ import annotations
 import json
 import time
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from .config import TOKEN_URL, Settings
+from .config import BEATPORT_API_BASE, TOKEN_URL, Settings
+
+LOGIN_URL = f"{BEATPORT_API_BASE}/auth/login/"
+AUTHORIZE_URL = f"{BEATPORT_API_BASE}/auth/o/authorize/"
+REDIRECT_URI = f"{BEATPORT_API_BASE}/auth/o/post-message/"
 
 # Refresh this many seconds before the token actually expires.
 EXPIRY_MARGIN = 60.0
@@ -46,9 +61,9 @@ class TokenManager:
             try:
                 return await self._store(await self._refresh(http, str(token["refresh_token"])))
             except BeatportAuthError:
-                pass  # refresh token revoked/expired — fall back to password login
+                pass  # refresh token revoked/expired — fall back to a fresh login
 
-        return await self._store(await self._password_login(http))
+        return await self._store(await self._login(http))
 
     def invalidate(self) -> None:
         """Drop the current token so the next call re-authenticates."""
@@ -57,11 +72,17 @@ class TokenManager:
             self._token["expires_at"] = 0
             self._save_cache(self._token)
 
-    async def _password_login(self, http: httpx.AsyncClient) -> dict[str, Any]:
+    async def _login(self, http: httpx.AsyncClient) -> dict[str, Any]:
         if not (self._settings.username and self._settings.password):
             raise BeatportAuthError(
                 "BEATPORT_USERNAME and BEATPORT_PASSWORD environment variables must be set"
             )
+        try:
+            return await self._password_grant(http)
+        except BeatportAuthError:
+            return await self._session_login(http)
+
+    async def _password_grant(self, http: httpx.AsyncClient) -> dict[str, Any]:
         response = await http.post(
             TOKEN_URL,
             data={
@@ -72,6 +93,49 @@ class TokenManager:
             },
         )
         return self._parse_token_response(response, "password login")
+
+    async def _session_login(self, http: httpx.AsyncClient) -> dict[str, Any]:
+        login = await http.post(
+            LOGIN_URL,
+            json={
+                "username": self._settings.username,
+                "password": self._settings.password,
+            },
+        )
+        if login.status_code != 200:
+            raise BeatportAuthError(
+                f"Beatport login failed with HTTP {login.status_code}: {login.text[:300]}"
+            )
+
+        authorize = await http.get(
+            AUTHORIZE_URL,
+            params={
+                "response_type": "code",
+                "client_id": self._settings.client_id,
+                "redirect_uri": REDIRECT_URI,
+            },
+            cookies=login.cookies,
+            follow_redirects=False,
+        )
+        location = authorize.headers.get("location", "")
+        code = parse_qs(urlsplit(location).query).get("code", [""])[0]
+        if authorize.status_code not in (301, 302) or not code:
+            raise BeatportAuthError(
+                f"Beatport authorize step failed (HTTP {authorize.status_code}); "
+                "no authorization code in redirect"
+            )
+
+        token = await http.post(
+            TOKEN_URL,
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "client_id": self._settings.client_id,
+                "redirect_uri": REDIRECT_URI,
+            },
+            cookies=login.cookies,
+        )
+        return self._parse_token_response(token, "authorization code exchange")
 
     async def _refresh(self, http: httpx.AsyncClient, refresh_token: str) -> dict[str, Any]:
         response = await http.post(

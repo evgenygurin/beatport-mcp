@@ -35,6 +35,9 @@ class FakeBeatportClient:
 
     async def get(self, path: str, **params: Any) -> Any:
         self.calls.append(("GET", path, params))
+        if path == "/catalog/search/":
+            # search responses nest items under the entity-type key
+            return {"count": 1, "page": "1/1", "next": None, params["type"]: [RAW_TRACK]}
         if path == "/catalog/tracks/":
             return {
                 "count": 1,
@@ -68,6 +71,7 @@ async def test_tools_are_registered():
         tools = {tool.name for tool in await client.list_tools()}
     assert {
         "search_tracks",
+        "filter_tracks",
         "get_track",
         "search_releases",
         "get_release",
@@ -90,9 +94,7 @@ async def test_tools_are_registered():
 
 async def test_search_tracks_returns_slim_results(fake_client):
     async with Client(server.mcp) as client:
-        result = await client.call_tool(
-            "search_tracks", {"query": "strobe", "bpm_low": 120, "per_page": 5}
-        )
+        result = await client.call_tool("search_tracks", {"query": "strobe", "per_page": 5})
 
     page = result.data
     assert page["count"] == 1
@@ -106,10 +108,23 @@ async def test_search_tracks_returns_slim_results(fake_client):
     assert "exclusive" not in track  # noisy fields stripped
 
     method, path, params = fake_client.calls[0]
-    assert (method, path) == ("GET", "/catalog/tracks/")
+    assert (method, path) == ("GET", "/catalog/search/")
     assert params["q"] == "strobe"
-    assert params["bpm_low"] == 120
-    assert params["artist_name"] is None  # dropped later by the HTTP client
+    assert params["type"] == "tracks"
+
+
+async def test_filter_tracks_builds_bpm_range(fake_client):
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(
+            "filter_tracks", {"artist_name": "deadmau5", "bpm_low": 170, "bpm_high": 175}
+        )
+
+    assert result.data["results"][0]["id"] == 123
+    method, path, params = fake_client.calls[0]
+    assert (method, path) == ("GET", "/catalog/tracks/")
+    assert params["artist_name"] == "deadmau5"
+    assert params["bpm"] == "170:175"
+    assert params["name"] is None  # dropped later by the HTTP client
 
 
 async def test_create_playlist_and_add_tracks(fake_client):

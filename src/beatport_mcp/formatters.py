@@ -127,11 +127,18 @@ def slim_playlist(playlist: Any) -> Any:
     )
 
 
+# /catalog/search/ nests items under the entity name instead of "results"
+LIST_KEYS = ("results", "tracks", "releases", "artists", "labels", "charts")
+
+
 def slim_page(payload: Any, item_formatter: Any = None) -> Any:
     """Format a paginated list response, applying `item_formatter` per item."""
-    if not isinstance(payload, dict) or "results" not in payload:
+    if not isinstance(payload, dict):
         return payload
-    items = payload.get("results") or []
+    list_key = next((k for k in LIST_KEYS if isinstance(payload.get(k), list)), None)
+    if list_key is None:
+        return payload
+    items = payload[list_key]
     if item_formatter is not None:
         items = [item_formatter(item) for item in items]
     return _drop_empty(

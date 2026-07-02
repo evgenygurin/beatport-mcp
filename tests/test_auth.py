@@ -81,9 +81,26 @@ async def test_missing_credentials_raise(fake_beatport, tmp_path):
             await manager.get_access_token(http)
 
 
-async def test_bad_password_raises(fake_beatport, settings):
+async def test_password_grant_disabled_falls_back_to_session_flow(fake_beatport, settings):
+    """Beatport returns unauthorized_client for the password grant → session flow."""
     fake_beatport.fail_password_login = True
     manager = TokenManager(settings)
     async with httpx.AsyncClient(transport=fake_beatport.transport()) as http:
-        with pytest.raises(BeatportAuthError, match="password login failed"):
+        token = await manager.get_access_token(http)
+
+    assert token == "ACCESS-1"
+    assert fake_beatport.session_logins == 1
+    grants = [r["grant_type"] for r in fake_beatport.token_requests]
+    assert grants == ["password", "authorization_code"]
+    code_request = fake_beatport.token_requests[1]
+    assert code_request["code"] in fake_beatport.issued_codes
+    assert code_request["redirect_uri"].endswith("/auth/o/post-message/")
+
+
+async def test_bad_password_raises(fake_beatport, settings):
+    fake_beatport.fail_password_login = True
+    fake_beatport.fail_session_login = True
+    manager = TokenManager(settings)
+    async with httpx.AsyncClient(transport=fake_beatport.transport()) as http:
+        with pytest.raises(BeatportAuthError, match="login failed"):
             await manager.get_access_token(http)

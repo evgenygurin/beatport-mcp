@@ -19,16 +19,20 @@ Notes collected while building this server (July 2026).
 
 Two flows are used by open-source clients:
 
-1. **Password grant** (used by this project) — single POST to
-   `/v4/auth/o/token/` with `grant_type=password`, `username`, `password`
-   (+ `client_id`). Returns `access_token` (~10 h), `refresh_token`, `expires_in`,
-   `scope`. Refresh via `grant_type=refresh_token` + `client_id`.
-2. **Authorization-code flow with session login** — POST `/v4/auth/login/`
-   (username/password → session cookie), GET `/v4/auth/o/authorize/?response_type=code&client_id=…&redirect_uri=https://api.beatport.com/v4/auth/o/post-message/`
+1. **Password grant** — single POST to `/v4/auth/o/token/` with
+   `grant_type=password`, `username`, `password` (+ `client_id`).
+   **Status July 2026: disabled for public clients.** Live-tested: the docs
+   client_id returns HTTP 400 `{"error": "unauthorized_client"}`, no client_id
+   returns 401 `{"error": "invalid_client"}`. The server still tries it first in
+   case a user-supplied `BEATPORT_CLIENT_ID` allows it.
+2. **Authorization-code flow with session login** (used by this project,
+   **live-verified working**) — POST `/v4/auth/login/`
+   (username/password JSON → session cookie), GET `/v4/auth/o/authorize/?response_type=code&client_id=…&redirect_uri=https://api.beatport.com/v4/auth/o/post-message/`
    (302 → `?code=…`), then POST `/v4/auth/o/token/` with
-   `grant_type=authorization_code`. Used by
+   `grant_type=authorization_code` → `access_token` (~10 h), `refresh_token`,
+   `scope: "app:docs user:dj"`. Same flow as
    [beets-beatport4](https://github.com/Samik081/beets-beatport4) (which scrapes the
-   docs `client_id` automatically) and others.
+   docs `client_id` automatically).
 
 ## Prior art (GitHub)
 
@@ -40,10 +44,14 @@ Two flows are used by open-source clients:
 | [squelch303/dj-trackfix](https://github.com/squelch303/dj-trackfix) | auth-code flow with `redirect_uri=/v4/auth/o/post-message/` |
 | [jentic/jentic-public-apis](https://github.com/jentic/jentic-public-apis) | OpenAPI 3.0.3 spec for the catalog endpoints |
 
-## Endpoints used by this server
+## Endpoints used by this server (live-verified)
 
-- `GET /catalog/tracks/` — filters seen in the wild: `q`, `artist_name`, `genre_id`,
-  `bpm_low`, `bpm_high`, `page`, `per_page`, `order_by`
+- `GET /catalog/search/` — **the** relevance search: `q`, `type`
+  (`tracks|releases|artists|labels`), `page`, `per_page`. Items are nested under
+  the entity-type key (`"tracks": […]`), not `"results"`. Note: `q` on the list
+  endpoints (`/catalog/tracks/?q=…`) is ignored — use this endpoint for free text.
+- `GET /catalog/tracks/` — structured filters: `name`, `artist_name`, `genre_id`,
+  `bpm` (range as `low:high`, e.g. `bpm=170:175`), `order_by`, `page`, `per_page`
 - `GET /catalog/tracks/{id}/`
 - `GET /catalog/releases/`, `GET /catalog/releases/{id}/`, `GET /catalog/releases/{id}/tracks/`
 - `GET /catalog/artists/`, `GET /catalog/artists/{id}/tracks/`
