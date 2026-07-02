@@ -11,8 +11,8 @@ Notes collected while building this server (July 2026).
   charts, genres; `BearerAuth`):
   [jentic/jentic-public-apis](https://github.com/jentic/jentic-public-apis)
   → `apis/openapi/beatport.com/main/4.0.0/openapi.json`
-  (vendored here as `openapi/beatport-v4.openapi.json`, also copied to
-  `src/beatport_mcp/data/` for the spec-driven server).
+  (vendored here as `src/beatport_mcp/data/beatport-v4.openapi.json`,
+  used by the spec-driven server).
 - Base URL: `https://api.beatport.com/v4`.
 
 ## Authentication with username/password

@@ -74,6 +74,39 @@ async def test_failed_refresh_falls_back_to_password(fake_beatport, settings):
     assert grants == ["refresh_token", "password"]
 
 
+async def test_cached_token_for_other_account_is_ignored(fake_beatport, settings):
+    settings.token_file.write_text(
+        json.dumps(
+            {
+                "access_token": "OTHER-USERS-TOKEN",
+                "refresh_token": "OTHER-REFRESH",
+                "expires_at": time.time() + 3600,
+                "account": {"username": "someone@else.com", "client_id": settings.client_id},
+            }
+        )
+    )
+    manager = TokenManager(settings)
+    async with httpx.AsyncClient(transport=fake_beatport.transport()) as http:
+        token = await manager.get_access_token(http)
+
+    assert token == "ACCESS-1"  # fresh login, foreign token not reused
+    assert fake_beatport.token_requests[0]["grant_type"] == "password"
+
+
+async def test_invalidate_keeps_refresh_token_usable(fake_beatport, settings):
+    manager = TokenManager(settings)
+    async with httpx.AsyncClient(transport=fake_beatport.transport()) as http:
+        await manager.get_access_token(http)  # login -> ACCESS-1 / REFRESH-1
+        manager.invalidate()
+        token = await manager.get_access_token(http)
+
+    assert token == "ACCESS-2"
+    grants = [r["grant_type"] for r in fake_beatport.token_requests]
+    assert grants == ["password", "refresh_token"]  # invalidation refreshes, no re-login
+    # the on-disk cache still contains a loadable token for the next process
+    assert json.loads(settings.token_file.read_text())["refresh_token"] == "REFRESH-2"
+
+
 async def test_missing_credentials_raise(fake_beatport, tmp_path):
     manager = TokenManager(Settings(token_file=tmp_path / "token.json"))
     async with httpx.AsyncClient(transport=fake_beatport.transport()) as http:

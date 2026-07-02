@@ -88,6 +88,8 @@ async def test_tools_are_registered():
         "get_playlist_tracks",
         "create_playlist",
         "add_tracks_to_playlist",
+        "remove_track_from_playlist",
+        "delete_playlist",
         "beatport_api_get",
     } <= tools
 

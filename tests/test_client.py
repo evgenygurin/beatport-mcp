@@ -41,3 +41,29 @@ async def test_api_error_raises(fake_beatport, settings):
             await client.get("/catalog/tracks/999999999/")
 
     assert excinfo.value.status_code == 404
+    assert "Not found." in str(excinfo.value)  # JSON detail extracted, not raw body
+
+
+async def test_query_string_embedded_in_path_is_preserved(fake_beatport, settings):
+    """httpx would drop a path-embedded query when params= is passed; we lift it."""
+    fake_beatport.routes["/v4/catalog/search/"] = {"count": 0, "results": []}
+    async with BeatportClient(settings, transport=fake_beatport.transport()) as client:
+        await client.get("/catalog/search/?q=techno&type=tracks", per_page=5)
+
+    params = fake_beatport.api_requests[0].url.params
+    assert params["q"] == "techno"
+    assert params["type"] == "tracks"
+    assert params["per_page"] == "5"
+
+
+async def test_concurrent_calls_login_only_once(fake_beatport, settings):
+    """Parallel tool calls with no token must not stampede the login endpoint."""
+    import asyncio
+
+    fake_beatport.routes["/v4/my/account/"] = {"username": "dj"}
+    async with BeatportClient(settings, transport=fake_beatport.transport()) as client:
+        results = await asyncio.gather(*(client.get("/my/account/") for _ in range(5)))
+
+    assert all(r == {"username": "dj"} for r in results)
+    password_grants = [r for r in fake_beatport.token_requests if r["grant_type"] == "password"]
+    assert len(password_grants) == 1

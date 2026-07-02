@@ -16,13 +16,15 @@ Two flows are attempted, in order:
    - ``POST /v4/auth/o/token/`` with ``grant_type=authorization_code``
 
 Refreshing uses ``grant_type=refresh_token`` with the same ``client_id``.
-Tokens are cached on disk (default ``~/.beatport-mcp/token.json``) so
-restarts don't re-send the password.
+Tokens are cached on disk (default ``~/.beatport-mcp/token.json``, mode 600,
+keyed to the username/client_id) so restarts don't re-send the password.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import time
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -49,28 +51,46 @@ class TokenManager:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._token: dict[str, Any] | None = None
+        # Single-flight: concurrent tool calls must not each run a login.
+        self._lock = asyncio.Lock()
 
     async def get_access_token(self, http: httpx.AsyncClient) -> str:
         """Return a valid access token, logging in or refreshing as needed."""
-        token = self._token or self._load_cache()
-        if token and not self._expired(token):
-            self._token = token
+        token = self._current_token()
+        if token is not None:
             return str(token["access_token"])
 
-        if token and token.get("refresh_token"):
-            try:
-                return await self._store(await self._refresh(http, str(token["refresh_token"])))
-            except BeatportAuthError:
-                pass  # refresh token revoked/expired — fall back to a fresh login
+        async with self._lock:
+            token = self._current_token()  # another waiter may have refreshed
+            if token is not None:
+                return str(token["access_token"])
 
-        return await self._store(await self._login(http))
+            token = self._token or self._load_cache()
+            if token and token.get("refresh_token"):
+                try:
+                    return await self._store(await self._refresh(http, str(token["refresh_token"])))
+                except BeatportAuthError:
+                    pass  # refresh token revoked/expired — fall back to a fresh login
+
+            return await self._store(await self._login(http))
 
     def invalidate(self) -> None:
-        """Drop the current token so the next call re-authenticates."""
+        """Drop the current access token so the next call re-authenticates.
+
+        In-memory only: the refresh_token stays intact in the cache file so a
+        restarted process can still refresh instead of re-sending the password.
+        """
         if self._token is not None:
-            self._token.pop("access_token", None)
             self._token["expires_at"] = 0
-            self._save_cache(self._token)
+
+    def _current_token(self) -> dict[str, Any] | None:
+        token = self._token or self._load_cache()
+        if token and token.get("access_token") and not self._expired(token):
+            self._token = token
+            return token
+        if token is not None:
+            self._token = token  # keep for its refresh_token
+        return None
 
     async def _login(self, http: httpx.AsyncClient) -> dict[str, Any]:
         if not (self._settings.username and self._settings.password):
@@ -106,6 +126,11 @@ class TokenManager:
             raise BeatportAuthError(
                 f"Beatport login failed with HTTP {login.status_code}: {login.text[:300]}"
             )
+        # Per-request `cookies=` is deprecated in httpx; send the session
+        # cookie explicitly so the shared client's jar stays untouched.
+        session_headers = {
+            "Cookie": "; ".join(f"{name}={value}" for name, value in login.cookies.items())
+        }
 
         authorize = await http.get(
             AUTHORIZE_URL,
@@ -114,7 +139,7 @@ class TokenManager:
                 "client_id": self._settings.client_id,
                 "redirect_uri": REDIRECT_URI,
             },
-            cookies=login.cookies,
+            headers=session_headers,
             follow_redirects=False,
         )
         location = authorize.headers.get("location", "")
@@ -133,7 +158,7 @@ class TokenManager:
                 "client_id": self._settings.client_id,
                 "redirect_uri": REDIRECT_URI,
             },
-            cookies=login.cookies,
+            headers=session_headers,
         )
         return self._parse_token_response(token, "authorization code exchange")
 
@@ -169,19 +194,31 @@ class TokenManager:
         self._save_cache(token)
         return str(token["access_token"])
 
+    def _cache_identity(self) -> dict[str, str]:
+        return {"username": self._settings.username, "client_id": self._settings.client_id}
+
     def _load_cache(self) -> dict[str, Any] | None:
         path = self._settings.token_file
         try:
             data: dict[str, Any] = json.loads(path.read_text())
         except (OSError, ValueError):
             return None
-        return data if "access_token" in data else None
+        if not isinstance(data, dict) or "access_token" not in data:
+            return None
+        # Never reuse a token issued for a different account or client.
+        if data.get("account", self._cache_identity()) != self._cache_identity():
+            return None
+        return data
 
     def _save_cache(self, token: dict[str, Any]) -> None:
         path = self._settings.token_file
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(token, indent=2))
-            path.chmod(0o600)
+            payload = json.dumps({**token, "account": self._cache_identity()}, indent=2)
+            # O_CREAT with 0600 so the tokens are never world-readable,
+            # not even between creation and a later chmod.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(payload)
         except OSError:
             pass  # cache is best-effort; auth still works without it

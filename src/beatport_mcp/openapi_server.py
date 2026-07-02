@@ -25,8 +25,6 @@ from .config import BEATPORT_API_BASE, Settings
 class _BearerAuth(httpx.Auth):
     """httpx auth hook that injects a fresh Beatport bearer token per request."""
 
-    requires_response_body = True
-
     def __init__(self, settings: Settings) -> None:
         self._tokens = TokenManager(settings)
         self._http = httpx.AsyncClient(timeout=settings.timeout)
@@ -50,8 +48,18 @@ def build_server() -> FastMCP[None]:
         base_url=BEATPORT_API_BASE,
         timeout=settings.timeout,
         auth=_BearerAuth(settings),
+        # the spec's paths have no trailing slash; Beatport 301-redirects them
+        follow_redirects=True,
     )
-    return FastMCP.from_openapi(openapi_spec=spec, client=client, name="Beatport (OpenAPI)")
+    return FastMCP.from_openapi(
+        openapi_spec=spec,
+        client=client,
+        name="Beatport (OpenAPI)",
+        # the community spec's response schemas are approximate (e.g. it types
+        # track.key as string while the API returns an object) — don't reject
+        # real API responses over them
+        validate_output=False,
+    )
 
 
 def main() -> None:

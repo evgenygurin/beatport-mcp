@@ -72,7 +72,7 @@ class FakeBeatport:
     def _handle_login(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode())
         self.session_logins += 1
-        if self.fail_session_login or body.get("password") != "hunter2":
+        if self.fail_session_login:
             return httpx.Response(401, json={"detail": "Unable to log in."})
         return httpx.Response(
             200,

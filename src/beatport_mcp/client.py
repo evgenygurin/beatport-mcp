@@ -4,11 +4,25 @@ from __future__ import annotations
 
 from types import TracebackType
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
 from .auth import TokenManager
 from .config import BEATPORT_API_BASE, Settings
+
+
+def _error_detail(response: httpx.Response) -> str:
+    """Extract the human-readable error from a Beatport response body."""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            detail = body.get("detail") or body.get("error") or body.get("message")
+            if isinstance(detail, str):
+                return detail
+    except ValueError:
+        pass
+    return response.text[:500]
 
 
 class BeatportAPIError(Exception):
@@ -39,6 +53,8 @@ class BeatportClient:
             headers={
                 "User-Agent": "beatport-mcp/0.1 (+https://github.com/evgenygurin/beatport-mcp)"
             },
+            # Beatport 301-redirects paths without a trailing slash
+            follow_redirects=True,
             transport=transport,  # type: ignore[arg-type]
         )
 
@@ -53,14 +69,20 @@ class BeatportClient:
         """Perform an authenticated request; returns the decoded JSON body."""
         path = "/" + path.lstrip("/")
         clean_params = {k: v for k, v in (params or {}).items() if v is not None}
+        # httpx replaces a URL's query string when `params` is given, so lift a
+        # query embedded in the path (e.g. "/catalog/search/?q=x") into params.
+        split = urlsplit(path)
+        if split.query:
+            path = split.path
+            clean_params = dict(parse_qsl(split.query)) | clean_params
 
         response = await self._send(method, path, clean_params, json)
         if response.status_code == 401:
             self._tokens.invalidate()
             response = await self._send(method, path, clean_params, json)
 
-        if response.status_code >= 400:
-            raise BeatportAPIError(response.status_code, response.text[:500])
+        if response.status_code >= 300:
+            raise BeatportAPIError(response.status_code, _error_detail(response))
         if response.status_code == 204 or not response.content:
             return {"status": response.status_code}
         return response.json()

@@ -116,15 +116,31 @@ def slim_chart(chart: Any) -> Any:
 def slim_playlist(playlist: Any) -> Any:
     if not isinstance(playlist, dict):
         return playlist
+    track_count = playlist.get("track_count")
+    if track_count is None:
+        track_count = playlist.get("count")
     return _drop_empty(
         {
             "id": playlist.get("id"),
             "name": playlist.get("name"),
-            "track_count": playlist.get("track_count") or playlist.get("count"),
+            "track_count": track_count,
             "created_date": playlist.get("created_date"),
             "updated_date": playlist.get("updated_date"),
         }
     )
+
+
+def slim_playlist_item(item: Any) -> Any:
+    """Playlist entries wrap the track: {"id": …, "position": …, "track": {…}}."""
+    if isinstance(item, dict) and "track" in item:
+        return _drop_empty(
+            {
+                "item_id": item.get("id"),
+                "position": item.get("position"),
+                "track": slim_track(item.get("track")),
+            }
+        )
+    return slim_track(item)
 
 
 # /catalog/search/ nests items under the entity name instead of "results"

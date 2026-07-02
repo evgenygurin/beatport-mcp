@@ -41,6 +41,14 @@ Page = Annotated[int, Field(ge=1, description="Page number (1-based)")]
 PerPage = Annotated[int, Field(ge=1, le=150, description="Results per page")]
 
 
+async def _search(entity_type: str, query: str, page: int, per_page: int, formatter: Any) -> Any:
+    """Relevance search on /catalog/search/ for one entity type."""
+    data = await get_client().get(
+        "/catalog/search/", q=query, type=entity_type, page=page, per_page=per_page
+    )
+    return fmt.slim_page(data, formatter)
+
+
 # ---------------------------------------------------------------------------
 # Catalog: tracks
 # ---------------------------------------------------------------------------
@@ -53,10 +61,7 @@ async def search_tracks(
     per_page: PerPage = 25,
 ) -> Any:
     """Relevance search for tracks by free text (title, artist, remixer …)."""
-    data = await get_client().get(
-        "/catalog/search/", q=query, type="tracks", page=page, per_page=per_page
-    )
-    return fmt.slim_page(data, fmt.slim_track)
+    return await _search("tracks", query, page, per_page, fmt.slim_track)
 
 
 @mcp.tool
@@ -115,10 +120,7 @@ async def search_releases(
     per_page: PerPage = 25,
 ) -> Any:
     """Relevance search for releases (albums/EPs/singles)."""
-    data = await get_client().get(
-        "/catalog/search/", q=query, type="releases", page=page, per_page=per_page
-    )
-    return fmt.slim_page(data, fmt.slim_release)
+    return await _search("releases", query, page, per_page, fmt.slim_release)
 
 
 @mcp.tool
@@ -148,10 +150,7 @@ async def search_artists(
     per_page: PerPage = 25,
 ) -> Any:
     """Search artists by name."""
-    data = await get_client().get(
-        "/catalog/search/", q=query, type="artists", page=page, per_page=per_page
-    )
-    return fmt.slim_page(data, fmt.slim_artist)
+    return await _search("artists", query, page, per_page, fmt.slim_artist)
 
 
 @mcp.tool
@@ -177,10 +176,7 @@ async def search_labels(
     per_page: PerPage = 25,
 ) -> Any:
     """Search record labels by name."""
-    data = await get_client().get(
-        "/catalog/search/", q=query, type="labels", page=page, per_page=per_page
-    )
-    return fmt.slim_page(data, fmt.slim_label)
+    return await _search("labels", query, page, per_page, fmt.slim_label)
 
 
 @mcp.tool
@@ -254,19 +250,7 @@ async def get_playlist_tracks(playlist_id: int, page: Page = 1, per_page: PerPag
     data = await get_client().get(
         f"/my/playlists/{playlist_id}/tracks/", page=page, per_page=per_page
     )
-    if isinstance(data, dict) and isinstance(data.get("results"), list):
-        # playlist items wrap the track: {"id": ..., "position": ..., "track": {...}}
-        data["results"] = [
-            {
-                "item_id": item.get("id"),
-                "position": item.get("position"),
-                "track": fmt.slim_track(item.get("track")),
-            }
-            if isinstance(item, dict) and "track" in item
-            else fmt.slim_track(item)
-            for item in data["results"]
-        ]
-    return fmt.slim_page(data)
+    return fmt.slim_page(data, fmt.slim_playlist_item)
 
 
 @mcp.tool
@@ -284,6 +268,23 @@ async def add_tracks_to_playlist(
     return await get_client().post(
         f"/my/playlists/{playlist_id}/tracks/bulk/", json={"track_ids": track_ids}
     )
+
+
+@mcp.tool
+async def remove_track_from_playlist(
+    playlist_id: int,
+    item_id: Annotated[
+        int, Field(description="Playlist item id (item_id from get_playlist_tracks, not track id)")
+    ],
+) -> Any:
+    """Remove a single entry from one of the user's playlists."""
+    return await get_client().delete(f"/my/playlists/{playlist_id}/tracks/{item_id}/")
+
+
+@mcp.tool
+async def delete_playlist(playlist_id: int) -> Any:
+    """Permanently delete one of the user's playlists."""
+    return await get_client().delete(f"/my/playlists/{playlist_id}/")
 
 
 # ---------------------------------------------------------------------------

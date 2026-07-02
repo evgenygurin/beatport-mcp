@@ -107,7 +107,7 @@ client is shown in [`examples/use_client.py`](examples/use_client.py).
 
 - Interactive docs: <https://api.beatport.com/v4/docs/>
 - A community OpenAPI 3.0.3 spec for the v4 catalog endpoints is vendored at
-  [`openapi/beatport-v4.openapi.json`](openapi/beatport-v4.openapi.json)
+  [`src/beatport_mcp/data/beatport-v4.openapi.json`](src/beatport_mcp/data/beatport-v4.openapi.json)
   (source: [jentic/jentic-public-apis](https://github.com/jentic/jentic-public-apis)).
 - `python -m beatport_mcp.openapi_server` runs an alternative, spec-driven server that
   auto-generates one MCP tool per OpenAPI operation via `FastMCP.from_openapi` —
