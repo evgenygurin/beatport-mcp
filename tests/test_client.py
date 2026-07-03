@@ -41,7 +41,8 @@ async def test_api_error_raises(fake_beatport, settings):
             await client.get("/catalog/tracks/999999999/")
 
     assert excinfo.value.status_code == 404
-    assert "Not found." in str(excinfo.value)  # JSON detail extracted, not raw body
+    assert "not found" in str(excinfo.value)  # friendly message surfaced
+    assert "Not found." in excinfo.value.detail  # raw JSON detail preserved
 
 
 async def test_query_string_embedded_in_path_is_preserved(fake_beatport, settings):

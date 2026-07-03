@@ -4,8 +4,10 @@ from typing import Any
 
 import pytest
 from fastmcp import Client
+from fastmcp.client.elicitation import ElicitResult
 
 from beatport_mcp import server
+from beatport_mcp.client import BeatportAPIError
 
 RAW_TRACK = {
     "id": 123,
@@ -32,6 +34,18 @@ RAW_TRACK = {
     "sale_type": "purchase",
 }
 
+# A distinct track (different id + artist) used as the seed for recommendations,
+# so the search/fallback results (RAW_TRACK) are never the seed itself.
+RAW_TRACK_2 = {
+    "id": 789,
+    "name": "Other",
+    "mix_name": "Original Mix",
+    "slug": "other",
+    "artists": [{"id": 8, "name": "Someone Else"}],
+    "genre": {"id": 12, "name": "Progressive House"},
+    "bpm": 130,
+}
+
 
 class FakeBeatportClient:
     def __init__(self) -> None:
@@ -54,6 +68,10 @@ class FakeBeatportClient:
             return {"count": 1, "next": None, "results": [{"id": 12, "name": "Prog House"}]}
         if path == "/catalog/tracks/123/":
             return RAW_TRACK
+        if path == "/catalog/tracks/789/":
+            return RAW_TRACK_2
+        if path == "/catalog/tracks/404/":
+            raise BeatportAPIError(404, '{"detail": "Not found."}')
         raise AssertionError(f"unexpected GET {path}")
 
     async def post(self, path: str, json: dict[str, Any]) -> Any:
@@ -63,6 +81,13 @@ class FakeBeatportClient:
         if path == "/my/playlists/900/tracks/bulk/":
             return {"status": 200}
         raise AssertionError(f"unexpected POST {path}")
+
+    async def delete(self, path: str) -> Any:
+        self.calls.append(("DELETE", path, {}))
+        return {"status": 204}
+
+    async def aclose(self) -> None:  # lifespan closes the client on shutdown
+        pass
 
 
 @pytest.fixture
@@ -98,29 +123,98 @@ async def test_tools_are_registered():
         "add_tracks_to_playlist",
         "remove_track_from_playlist",
         "delete_playlist",
+        "recommend_similar",
         "beatport_api_get",
     } <= tools
+
+
+async def test_read_tools_carry_readonly_annotation():
+    async with Client(server.mcp) as client:
+        tools = {t.name: t for t in await client.list_tools()}
+    assert tools["search_tracks"].annotations.readOnlyHint is True
+    assert tools["delete_playlist"].annotations.destructiveHint is True
+    assert tools["create_playlist"].annotations.readOnlyHint is False
+
+
+async def test_resources_and_prompts_are_registered():
+    async with Client(server.mcp) as client:
+        resources = {str(r.uri) for r in await client.list_resources()}
+        templates = {t.uriTemplate for t in await client.list_resource_templates()}
+        prompts = {p.name for p in await client.list_prompts()}
+    assert {"beatport://genres", "beatport://account"} <= resources
+    assert {"beatport://track/{track_id}", "beatport://chart/{chart_id}/tracks"} <= templates
+    assert {"crate_dig", "analyze_playlist"} <= prompts
+
+
+async def test_genres_resource_reads_catalog(fake_client):
+    async with Client(server.mcp) as client:
+        result = await client.read_resource("beatport://genres")
+    import json
+
+    payload = json.loads(result[0].text)
+    assert payload["results"][0]["name"] == "Prog House"
+
+
+async def test_track_template_resource(fake_client):
+    async with Client(server.mcp) as client:
+        result = await client.read_resource("beatport://track/123")
+    import json
+
+    assert json.loads(result[0].text)["id"] == 123
+
+
+async def test_crate_dig_prompt_renders():
+    async with Client(server.mcp) as client:
+        result = await client.get_prompt(
+            "crate_dig", {"genre": "hypnotic techno", "bpm_low": 130, "bpm_high": 138}
+        )
+    text = result.messages[0].content.text
+    assert "hypnotic techno" in text
+    assert "130" in text and "138" in text
+
+
+async def test_get_purchase_links_reports_progress(fake_client):
+    seen: list[tuple[float, float | None]] = []
+
+    async def on_progress(progress, total, message):
+        seen.append((progress, total))
+
+    async with Client(server.mcp, progress_handler=on_progress) as client:
+        result = await client.call_tool("get_purchase_links", {"track_ids": [123, 123]})
+
+    assert len(result.structured_content["results"]) == 2
+    assert seen[-1] == (2, 2)
 
 
 async def test_search_tracks_returns_slim_results(fake_client):
     async with Client(server.mcp) as client:
         result = await client.call_tool("search_tracks", {"query": "strobe", "per_page": 5})
 
+    # .data returns typed model objects; .structured_content is the JSON dict
     page = result.data
-    assert page["count"] == 1
-    assert page["has_next_page"] is False
-    track = page["results"][0]
-    assert track["id"] == 123
-    assert track["artists"] == [{"id": 7, "name": "deadmau5"}]
-    assert track["key"] == "B Minor"
-    assert track["price"] == "$1.49"
-    assert track["url"] == "https://www.beatport.com/track/strobe/123"
-    assert "exclusive" not in track  # noisy fields stripped
+    assert page.count == 1
+    assert page.has_next_page is False
+    track = page.results[0]
+    assert track.id == 123
+    assert track.artists[0].id == 7 and track.artists[0].name == "deadmau5"
+    assert track.key == "B Minor"
+    assert track.price == "$1.49"
+    assert track.url == "https://www.beatport.com/track/strobe/123"
+    # only declared model fields are present — noisy Beatport fields are gone
+    assert "exclusive" not in result.structured_content["results"][0]
 
     method, path, params = fake_client.calls[0]
     assert (method, path) == ("GET", "/catalog/search/")
     assert params["q"] == "strobe"
     assert params["type"] == "tracks"
+
+
+async def test_output_schema_is_published(fake_client):
+    async with Client(server.mcp) as client:
+        tools = {t.name: t for t in await client.list_tools()}
+    schema = tools["search_tracks"].outputSchema
+    assert schema is not None
+    assert "results" in schema.get("properties", {})
 
 
 async def test_filter_tracks_builds_bpm_range(fake_client):
@@ -129,7 +223,7 @@ async def test_filter_tracks_builds_bpm_range(fake_client):
             "filter_tracks", {"artist_name": "deadmau5", "bpm_low": 170, "bpm_high": 175}
         )
 
-    assert result.data["results"][0]["id"] == 123
+    assert result.data.results[0].id == 123
     method, path, params = fake_client.calls[0]
     assert (method, path) == ("GET", "/catalog/tracks/")
     assert params["artist_name"] == "deadmau5"
@@ -142,22 +236,23 @@ async def test_get_track_preview_returns_official_sample(fake_client):
         result = await client.call_tool("get_track_preview", {"track_id": 123})
 
     data = result.data
-    assert data["preview_url"] == "https://geo-samples.beatport.com/track/abc.LOFI.mp3"
-    assert data["preview_start_ms"] == 120167
-    assert data["preview_end_ms"] == 240167
-    assert data["streamable"] is True
-    assert data["purchase_url"] == "https://www.beatport.com/track/strobe/123"
-    assert data["price"] == "$1.49"
+    assert data.preview_url == "https://geo-samples.beatport.com/track/abc.LOFI.mp3"
+    assert data.preview_start_ms == 120167
+    assert data.preview_end_ms == 240167
+    assert data.streamable is True
+    assert data.purchase_url == "https://www.beatport.com/track/strobe/123"
+    assert data.price == "$1.49"
 
 
 async def test_get_purchase_links(fake_client):
     async with Client(server.mcp) as client:
         result = await client.call_tool("get_purchase_links", {"track_ids": [123]})
 
-    entry = result.data["results"][0]
-    assert entry["purchase_url"] == "https://www.beatport.com/track/strobe/123"
-    assert entry["price"] == "$1.49"
-    assert "preview_url" not in entry  # purchase view stays focused on buying
+    entry = result.data.results[0]
+    assert entry.purchase_url == "https://www.beatport.com/track/strobe/123"
+    assert entry.price == "$1.49"
+    # purchase view has no preview field at all (separate model)
+    assert "preview_url" not in result.structured_content["results"][0]
 
 
 async def test_create_playlist_and_add_tracks(fake_client):
@@ -167,13 +262,110 @@ async def test_create_playlist_and_add_tracks(fake_client):
             "add_tracks_to_playlist", {"playlist_id": 900, "track_ids": [123, 456]}
         )
 
-    assert created.data["id"] == 900
+    assert created.data.id == 900
     assert added.data == {"status": 200}
     bulk_call = ("POST", "/my/playlists/900/tracks/bulk/", {"track_ids": [123, 456]})
     assert bulk_call in fake_client.calls
+
+
+async def test_read_only_mode_hides_and_blocks_write_tools(fake_client):
+    server.set_read_only(True)
+    try:
+        async with Client(server.mcp) as client:
+            names = {t.name for t in await client.list_tools()}
+            assert "search_tracks" in names  # reads stay
+            assert {"create_playlist", "add_tracks_to_playlist", "delete_playlist"} & names == set()
+            with pytest.raises(Exception, match=r"create_playlist|not found|Unknown"):
+                await client.call_tool("create_playlist", {"name": "nope"})
+    finally:
+        server.set_read_only(False)  # restore for other tests
+
+    async with Client(server.mcp) as client:
+        names = {t.name for t in await client.list_tools()}
+    assert "create_playlist" in names  # re-enabled
+
+
+async def test_mount_raw_adds_namespaced_spec_tools():
+    server.mount_raw()
+    server.mount_raw()  # idempotent — no duplicate-namespace error
+    async with Client(server.mcp) as client:
+        names = {t.name for t in await client.list_tools()}
+    assert "raw_getTrack" in names
+    assert "raw_listTracks" in names
+    assert "search_tracks" in names  # curated tools still present alongside
 
 
 async def test_per_page_is_validated():
     async with Client(server.mcp) as client:
         with pytest.raises(Exception, match=r"per_page|validation"):
             await client.call_tool("search_tracks", {"query": "x", "per_page": 9999})
+
+
+async def test_api_error_is_mapped_to_friendly_message(fake_client):
+    """A raw 404 from the client surfaces as a clean message, not a status dump."""
+    async with Client(server.mcp) as client:
+        with pytest.raises(Exception, match="not found"):
+            await client.call_tool("get_track", {"track_id": 404})
+
+
+async def test_delete_playlist_confirmed_via_elicitation(fake_client):
+    async def accept(message, response_type, params, context):
+        return ElicitResult(action="accept", content=None)
+
+    async with Client(server.mcp, elicitation_handler=accept) as client:
+        result = await client.call_tool("delete_playlist", {"playlist_id": 900})
+
+    assert result.data == {"status": 204}
+    assert ("DELETE", "/my/playlists/900/", {}) in fake_client.calls
+
+
+async def test_delete_playlist_declined_via_elicitation(fake_client):
+    async def decline(message, response_type, params, context):
+        return ElicitResult(action="decline")
+
+    async with Client(server.mcp, elicitation_handler=decline) as client:
+        result = await client.call_tool("delete_playlist", {"playlist_id": 900})
+
+    assert result.data == {"cancelled": True, "playlist_id": 900}
+    assert not any(c[0] == "DELETE" for c in fake_client.calls)  # nothing deleted
+
+
+async def test_recommend_similar_uses_sampling_and_verifies_catalog(fake_client):
+    """With sampling, LLM suggestions are verified against the real catalog."""
+
+    async def suggest(messages, params, context):
+        return "1. deadmau5 - Strobe\n2. Some Artist - Some Track"
+
+    async with Client(server.mcp, sampling_handler=suggest) as client:
+        result = await client.call_tool("recommend_similar", {"track_id": 789, "count": 5})
+
+    data = result.data
+    assert data.via == "sampling"
+    assert data.seed.id == 789
+    # every recommendation is a real catalog track (id 123 from the fake search)
+    assert data.results and all(r.id == 123 for r in data.results)
+
+
+async def test_recommend_similar_falls_back_without_sampling(fake_client):
+    """No sampling handler → catalog fallback by genre/BPM (via='genre')."""
+    async with Client(server.mcp) as client:
+        result = await client.call_tool("recommend_similar", {"track_id": 789, "count": 5})
+
+    data = result.data
+    assert data.via == "genre"
+    assert data.seed.id == 789
+    assert all(r.id != 789 for r in data.results)  # seed excluded
+
+
+async def test_health_route():
+    async with Client(server.mcp) as client:
+        await client.ping()  # server is reachable
+    # exercise the route handler directly (HTTP transport only in production)
+    from starlette.requests import Request
+
+    scope = {"type": "http", "method": "GET", "path": "/health", "headers": []}
+    response = await server.health(Request(scope))
+    assert response.status_code == 200
+    import json
+
+    assert json.loads(bytes(response.body))["status"] == "ok"
