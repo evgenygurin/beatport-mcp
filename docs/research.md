@@ -57,9 +57,35 @@ Two flows are used by open-source clients:
 - `GET /catalog/artists/`, `GET /catalog/artists/{id}/tracks/`
 - `GET /catalog/labels/`, `GET /catalog/labels/{id}/releases/`
 - `GET /catalog/genres/`
-- `GET /catalog/charts/`, `GET /catalog/charts/{id}/tracks/`
+- `GET /catalog/genres/{id}/top/{n}/` — the genre's Top-N chart (used for the
+  hypnotic-techno demo)
+- `GET /catalog/charts/` (filter by `name=`, `genre_id`), `GET /catalog/charts/{id}/tracks/`
 - `GET /my/account/`
 - `GET|POST /my/playlists/`, `GET /my/playlists/{id}/tracks/`,
-  `POST /my/playlists/{id}/tracks/bulk/`
+  `POST /my/playlists/{id}/tracks/bulk/`,
+  `DELETE /my/playlists/{id}/`, `DELETE /my/playlists/{id}/tracks/{item_id}/`
 
 List responses are paginated: `{"count", "page", "per_page", "next", "previous", "results": […]}`.
+`page` comes back as a string like `"1/1587"`; `/catalog/search/` nests items under the
+entity key instead of `results`.
+
+## Track audio / previews (live-verified)
+
+The API serves only a preview clip per track, never the full file — full audio requires
+purchasing the track. Relevant track fields:
+
+- `sample_url` — a directly playable MP3 of the ~2-minute preview (e.g.
+  `https://geo-samples.beatport.com/track/….LOFI.mp3`, HTTP 200 `audio/mpeg`)
+- `sample_start_ms` / `sample_end_ms` — where the clip sits in the full track
+- `is_available_for_streaming` — streaming-entitlement flag
+- Purchase page: `https://www.beatport.com/track/{slug}/{id}`
+
+## Gotchas
+
+- **Trailing slashes matter.** Paths without a trailing slash 301-redirect to the slashed
+  form; the HTTP client must follow redirects (the vendored spec's paths have no trailing
+  slash, so the spec-driven server sets `follow_redirects=True`).
+- **`bpm` range** is a single `low:high` query param (`bpm=170:175`), not `bpm_low`/`bpm_high`.
+- The community spec's response schemas are approximate (e.g. it types `track.key` as a
+  string while the API returns an object), so the spec-driven server sets
+  `validate_output=False`.

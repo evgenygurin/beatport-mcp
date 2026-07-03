@@ -57,17 +57,27 @@ Read-only reference data, addressable by URI (no tool call needed):
 | `crate_dig` | Build a track shortlist from a genre + BPM range, ready to save as a playlist |
 | `analyze_playlist` | Analyze a playlist's BPM/key/genre profile as a DJ set |
 
-Batch tools such as `get_purchase_links` stream progress and log via the MCP
-`Context`, and the server closes its HTTP client cleanly on shutdown (FastMCP lifespan).
-`delete_playlist` asks for confirmation via MCP elicitation before deleting (when the
-client supports it). API errors surface as short, actionable messages (e.g. *"Beatport:
-not found — check the id."*), and a timing middleware logs each tool call's duration at
-debug level. Configuration is validated via pydantic-settings (`BEATPORT_*` env vars or a
-`.env` file). `recommend_similar` uses MCP sampling (`ctx.sample`) to have the connected
-LLM propose similar tracks, then verifies each against the real catalog. Over the HTTP
-transport a `GET /health` route returns `{"status": "ok"}` for liveness probes. Setting
-`BEATPORT_READ_ONLY=1` hides the four mutating playlist tools (create/add/remove/delete)
-via FastMCP tag visibility, for a safe browse-only deployment.
+### Server capabilities
+
+The server leans on the full FastMCP v3 feature set:
+
+- **Typed structured output** — every catalog tool publishes a JSON output schema and
+  returns validated structured content (see above).
+- **Progress & logging** — batch tools like `get_purchase_links` stream `Context`
+  progress and log via `ctx.info`.
+- **Sampling** — `recommend_similar` asks the connected LLM (via `ctx.sample`) for
+  similar tracks, then verifies each against the real catalog so results always exist.
+- **Elicitation** — `delete_playlist` asks the client to confirm before the
+  irreversible delete (when the client supports it).
+- **Friendly errors** — API failures surface as short, actionable messages
+  (*"Beatport: not found — check the id."*), not raw status dumps.
+- **Middleware** — a timing middleware logs each tool call's duration at debug level.
+- **Lifespan** — the shared HTTP client is closed cleanly on shutdown.
+- **Health probe** — over HTTP, `GET /health` returns `{"status": "ok"}`.
+- **Read-only mode** — `BEATPORT_READ_ONLY=1` hides the mutating playlist tools via tag
+  visibility for a safe browse-only deployment.
+- **Composition** — `BEATPORT_INCLUDE_RAW=1` mounts the spec-driven server under the
+  `raw_` namespace (see [OpenAPI](#openapi)).
 
 ## Setup
 
@@ -116,6 +126,23 @@ BEATPORT_MCP_TRANSPORT=http BEATPORT_MCP_PORT=8000 uv run beatport-mcp
 ```
 
 Claude Code: `claude mcp add beatport -e BEATPORT_USERNAME=... -e BEATPORT_PASSWORD=... -- uv run --directory /path/to/beatport-mcp beatport-mcp`
+
+## Configuration
+
+All settings come from `BEATPORT_*` environment variables (or a `.env` file), validated by
+pydantic-settings. See [`.env.example`](.env.example).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BEATPORT_USERNAME` | — | Beatport account email (required) |
+| `BEATPORT_PASSWORD` | — | Beatport account password (required) |
+| `BEATPORT_CLIENT_ID` | docs client_id | Override the OAuth client id |
+| `BEATPORT_TOKEN_FILE` | `~/.beatport-mcp/token.json` | Token cache location |
+| `BEATPORT_TIMEOUT` | `30` | HTTP timeout (seconds) |
+| `BEATPORT_READ_ONLY` | `0` | Hide the mutating playlist tools |
+| `BEATPORT_INCLUDE_RAW` | `0` | Also mount the spec-driven server under `raw_` |
+| `BEATPORT_MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
+| `BEATPORT_MCP_HOST` / `BEATPORT_MCP_PORT` | `127.0.0.1` / `8000` | HTTP bind address |
 
 ## How authentication works
 
@@ -169,6 +196,9 @@ uv run ruff check . # lint
 uv run ruff format .
 uv run mypy         # strict typing
 ```
+
+Architecture notes and non-obvious gotchas for contributors live in
+[CLAUDE.md](CLAUDE.md).
 
 ## Disclaimer
 
