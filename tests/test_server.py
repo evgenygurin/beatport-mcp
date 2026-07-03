@@ -24,6 +24,10 @@ RAW_TRACK = {
     "isrc": "CA6D80900506",
     "catalog_number": "MAU5CD01",
     "price": {"code": "usd", "symbol": "$", "value": 1.49, "display": "$1.49"},
+    "sample_url": "https://geo-samples.beatport.com/track/abc.LOFI.mp3",
+    "sample_start_ms": 120167,
+    "sample_end_ms": 240167,
+    "is_available_for_streaming": True,
     "exclusive": False,
     "sale_type": "purchase",
 }
@@ -48,6 +52,8 @@ class FakeBeatportClient:
             }
         if path == "/catalog/genres/":
             return {"count": 1, "next": None, "results": [{"id": 12, "name": "Prog House"}]}
+        if path == "/catalog/tracks/123/":
+            return RAW_TRACK
         raise AssertionError(f"unexpected GET {path}")
 
     async def post(self, path: str, json: dict[str, Any]) -> Any:
@@ -73,6 +79,8 @@ async def test_tools_are_registered():
         "search_tracks",
         "filter_tracks",
         "get_track",
+        "get_track_preview",
+        "get_purchase_links",
         "search_releases",
         "get_release",
         "get_release_tracks",
@@ -127,6 +135,29 @@ async def test_filter_tracks_builds_bpm_range(fake_client):
     assert params["artist_name"] == "deadmau5"
     assert params["bpm"] == "170:175"
     assert params["name"] is None  # dropped later by the HTTP client
+
+
+async def test_get_track_preview_returns_official_sample(fake_client):
+    async with Client(server.mcp) as client:
+        result = await client.call_tool("get_track_preview", {"track_id": 123})
+
+    data = result.data
+    assert data["preview_url"] == "https://geo-samples.beatport.com/track/abc.LOFI.mp3"
+    assert data["preview_start_ms"] == 120167
+    assert data["preview_end_ms"] == 240167
+    assert data["streamable"] is True
+    assert data["purchase_url"] == "https://www.beatport.com/track/strobe/123"
+    assert data["price"] == "$1.49"
+
+
+async def test_get_purchase_links(fake_client):
+    async with Client(server.mcp) as client:
+        result = await client.call_tool("get_purchase_links", {"track_ids": [123]})
+
+    entry = result.data["results"][0]
+    assert entry["purchase_url"] == "https://www.beatport.com/track/strobe/123"
+    assert entry["price"] == "$1.49"
+    assert "preview_url" not in entry  # purchase view stays focused on buying
 
 
 async def test_create_playlist_and_add_tracks(fake_client):

@@ -108,6 +108,63 @@ async def get_track(track_id: int) -> Any:
     return fmt.slim_track(await get_client().get(f"/catalog/tracks/{track_id}/"))
 
 
+@mcp.tool
+async def get_track_preview(track_id: int) -> Any:
+    """Get the official Beatport audio preview for a track.
+
+    Returns the ~2-minute preview clip Beatport provides for legal
+    listening before purchase (`preview_url`, a direct MP3), the clip's
+    position within the full track, the track's purchase page, and its
+    price. This is the only track audio the API serves; full downloads
+    require purchasing the track (see `purchase_url`).
+    """
+    track = await get_client().get(f"/catalog/tracks/{track_id}/")
+    slim = fmt.slim_track(track)
+    return fmt._drop_empty(
+        {
+            "id": track.get("id"),
+            "name": slim.get("name"),
+            "artists": slim.get("artists"),
+            "mix_name": slim.get("mix_name"),
+            "preview_url": track.get("sample_url"),
+            "preview_start_ms": track.get("sample_start_ms"),
+            "preview_end_ms": track.get("sample_end_ms"),
+            "streamable": track.get("is_available_for_streaming"),
+            "purchase_url": slim.get("url"),
+            "price": slim.get("price"),
+        }
+    )
+
+
+@mcp.tool
+async def get_purchase_links(
+    track_ids: Annotated[list[int], Field(min_length=1, description="Beatport track ids")],
+) -> Any:
+    """Get the beatport.com purchase page and price for one or more tracks.
+
+    Use this to buy tracks in full quality — the API only serves previews
+    (see `get_track_preview`); the full file is available after purchase on
+    the returned `purchase_url`.
+    """
+    results = []
+    for track_id in track_ids:
+        track = await get_client().get(f"/catalog/tracks/{track_id}/")
+        slim = fmt.slim_track(track)
+        results.append(
+            fmt._drop_empty(
+                {
+                    "id": track.get("id"),
+                    "name": slim.get("name"),
+                    "artists": slim.get("artists"),
+                    "release": slim.get("release"),
+                    "purchase_url": slim.get("url"),
+                    "price": slim.get("price"),
+                }
+            )
+        )
+    return {"results": results}
+
+
 # ---------------------------------------------------------------------------
 # Catalog: releases
 # ---------------------------------------------------------------------------

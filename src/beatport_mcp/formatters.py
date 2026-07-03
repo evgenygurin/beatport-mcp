@@ -45,6 +45,8 @@ def slim_track(track: Any) -> Any:
         "isrc": track.get("isrc"),
         "catalog_number": track.get("catalog_number"),
         "price": _price(track.get("price")),
+        "preview_url": track.get("sample_url"),
+        "streamable": track.get("is_available_for_streaming"),
     }
     if track.get("slug") and track.get("id"):
         result["url"] = f"{WEB_BASE}/track/{track['slug']}/{track['id']}"
