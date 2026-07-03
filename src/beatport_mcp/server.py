@@ -8,9 +8,9 @@ environment variables. See README.md for setup.
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from fastmcp import Context, FastMCP
 from fastmcp.server.elicitation import CancelledElicitation, DeclinedElicitation
@@ -20,6 +20,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from . import formatters as fmt
+from . import models as m
 from .client import BeatportClient
 from .config import Settings
 from .middleware import TimingMiddleware
@@ -71,7 +72,9 @@ Page = Annotated[int, Field(ge=1, description="Page number (1-based)")]
 PerPage = Annotated[int, Field(ge=1, le=150, description="Results per page")]
 
 
-async def _search(entity_type: str, query: str, page: int, per_page: int, formatter: Any) -> Any:
+async def _search[T](
+    entity_type: str, query: str, page: int, per_page: int, formatter: Callable[[Any], T]
+) -> m.Page[T]:
     """Relevance search on /catalog/search/ for one entity type."""
     data = await get_client().get(
         "/catalog/search/", q=query, type=entity_type, page=page, per_page=per_page
@@ -102,7 +105,7 @@ async def search_tracks(
     query: Annotated[str, Field(description="Free-text search, e.g. 'strobe deadmau5'")],
     page: Page = 1,
     per_page: PerPage = 25,
-) -> Any:
+) -> m.Page[m.Track]:
     """Relevance search for tracks by free text (title, artist, remixer …)."""
     return await _search("tracks", query, page, per_page, fmt.slim_track)
 
@@ -122,7 +125,7 @@ async def filter_tracks(
     ] = None,
     page: Page = 1,
     per_page: PerPage = 25,
-) -> Any:
+) -> m.Page[m.Track]:
     """Filter the track catalog by structured criteria (title, artist, genre, BPM range).
 
     Use search_tracks for free-text relevance search; this tool is for precise
@@ -146,13 +149,13 @@ async def filter_tracks(
 
 
 @mcp.tool(tags={"catalog"}, annotations=READ_ONLY)
-async def get_track(track_id: int) -> Any:
+async def get_track(track_id: int) -> m.Track:
     """Get full details of a single track by its Beatport id."""
     return fmt.slim_track(await get_client().get(f"/catalog/tracks/{track_id}/"))
 
 
 @mcp.tool(tags={"catalog"}, annotations=READ_ONLY)
-async def get_track_preview(track_id: int) -> Any:
+async def get_track_preview(track_id: int) -> m.Preview:
     """Get the official Beatport audio preview for a track.
 
     Returns the ~2-minute preview clip Beatport provides for legal
@@ -163,19 +166,17 @@ async def get_track_preview(track_id: int) -> Any:
     """
     track = await get_client().get(f"/catalog/tracks/{track_id}/")
     slim = fmt.slim_track(track)
-    return fmt._drop_empty(
-        {
-            "id": track.get("id"),
-            "name": slim.get("name"),
-            "artists": slim.get("artists"),
-            "mix_name": slim.get("mix_name"),
-            "preview_url": track.get("sample_url"),
-            "preview_start_ms": track.get("sample_start_ms"),
-            "preview_end_ms": track.get("sample_end_ms"),
-            "streamable": track.get("is_available_for_streaming"),
-            "purchase_url": slim.get("url"),
-            "price": slim.get("price"),
-        }
+    return m.Preview(
+        id=slim.id,
+        name=slim.name,
+        artists=slim.artists,
+        mix_name=slim.mix_name,
+        preview_url=track.get("sample_url"),
+        preview_start_ms=track.get("sample_start_ms"),
+        preview_end_ms=track.get("sample_end_ms"),
+        streamable=track.get("is_available_for_streaming"),
+        purchase_url=slim.url,
+        price=slim.price,
     )
 
 
@@ -183,7 +184,7 @@ async def get_track_preview(track_id: int) -> Any:
 async def get_purchase_links(
     track_ids: Annotated[list[int], Field(min_length=1, description="Beatport track ids")],
     ctx: Context | None = None,
-) -> Any:
+) -> m.PurchaseLinks:
     """Get the beatport.com purchase page and price for one or more tracks.
 
     Use this to buy tracks in full quality — the API only serves previews
@@ -196,22 +197,20 @@ async def get_purchase_links(
         track = await get_client().get(f"/catalog/tracks/{track_id}/")
         slim = fmt.slim_track(track)
         results.append(
-            fmt._drop_empty(
-                {
-                    "id": track.get("id"),
-                    "name": slim.get("name"),
-                    "artists": slim.get("artists"),
-                    "release": slim.get("release"),
-                    "purchase_url": slim.get("url"),
-                    "price": slim.get("price"),
-                }
+            m.PurchaseLink(
+                id=slim.id,
+                name=slim.name,
+                artists=slim.artists,
+                release=slim.release,
+                purchase_url=slim.url,
+                price=slim.price,
             )
         )
         if ctx is not None:
             await ctx.report_progress(progress=index, total=total)
     if ctx is not None:
         await ctx.info(f"Resolved purchase links for {total} track(s)")
-    return {"results": results}
+    return m.PurchaseLinks(results=results)
 
 
 @mcp.tool(tags={"catalog"}, annotations=READ_ONLY)
@@ -219,7 +218,7 @@ async def recommend_similar(
     track_id: int,
     count: Annotated[int, Field(ge=1, le=25, description="How many recommendations")] = 10,
     ctx: Context | None = None,
-) -> Any:
+) -> m.Recommendations:
     """Recommend catalog tracks similar to a seed track.
 
     When the MCP client supports sampling, the connected LLM proposes similar
@@ -229,52 +228,55 @@ async def recommend_similar(
     (`via: "genre"`).
     """
     seed = fmt.slim_track(await get_client().get(f"/catalog/tracks/{track_id}/"))
-    seed_artist_ids = {a.get("id") for a in seed.get("artists", [])}
-    genre = seed.get("genre") or {}
-    bpm = seed.get("bpm")
+    seed_artist_ids = {a.id for a in seed.artists}
+    genre = seed.genre
+    bpm = seed.bpm
 
     suggestions: list[str] = []
     if ctx is not None:
-        artists = ", ".join(a.get("name", "") for a in seed.get("artists", []))
+        artists = ", ".join(a.name or "" for a in seed.artists)
+        genre_name = genre.name if genre else None
         try:
             sampled = await ctx.sample(
-                f'Suggest {count} electronic tracks similar to "{artists} - {seed.get("name")}" '
-                f"(genre: {genre.get('name')}, {bpm} BPM). Reply with one "
-                f'"Artist - Title" per line, nothing else.',
+                f'Suggest {count} electronic tracks similar to "{artists} - {seed.name}" '
+                f'(genre: {genre_name}, {bpm} BPM). Reply with one "Artist - Title" '
+                f"per line, nothing else.",
                 max_tokens=500,
             )
             suggestions = _parse_suggestions(sampled.text or "")
         except Exception:
             suggestions = []  # client doesn't support sampling — fall back below
 
-    results: list[Any] = []
+    results: list[m.Track] = []
     seen: set[Any] = {track_id}
     if suggestions:
         for query in suggestions:
             page = await _search("tracks", query, 1, 3, fmt.slim_track)
-            for track in page.get("results", []):
-                if track.get("id") not in seen:
-                    seen.add(track["id"])
+            for track in page.results:
+                if track.id not in seen:
+                    seen.add(track.id)
                     results.append(track)
                     break
             if len(results) >= count:
                 break
         via = "sampling"
     else:
-        params: dict[str, Any] = {"genre_id": genre.get("id"), "per_page": count * 3}
+        params: dict[str, Any] = {
+            "genre_id": genre.id if genre else None,
+            "per_page": count * 3,
+        }
         if bpm:
             params["bpm"] = f"{max(1, bpm - 6)}:{bpm + 6}"
         data = await get_client().get("/catalog/tracks/", order_by="-publish_date", **params)
-        for track in fmt.slim_page(data, fmt.slim_track).get("results", []):
-            track_artist_ids = {a.get("id") for a in track.get("artists", [])}
-            if track.get("id") not in seen and not (seed_artist_ids & track_artist_ids):
-                seen.add(track["id"])
+        for track in fmt.slim_page(data, fmt.slim_track).results:
+            if track.id not in seen and not (seed_artist_ids & {a.id for a in track.artists}):
+                seen.add(track.id)
                 results.append(track)
             if len(results) >= count:
                 break
         via = "genre"
 
-    return {"seed": seed, "via": via, "results": results[:count]}
+    return m.Recommendations(seed=seed, via=via, results=results[:count])
 
 
 # ---------------------------------------------------------------------------
@@ -287,19 +289,21 @@ async def search_releases(
     query: Annotated[str, Field(description="Release name / free-text search")],
     page: Page = 1,
     per_page: PerPage = 25,
-) -> Any:
+) -> m.Page[m.Release]:
     """Relevance search for releases (albums/EPs/singles)."""
     return await _search("releases", query, page, per_page, fmt.slim_release)
 
 
 @mcp.tool(tags={"catalog"}, annotations=READ_ONLY)
-async def get_release(release_id: int) -> Any:
+async def get_release(release_id: int) -> m.Release:
     """Get details of a release by id."""
     return fmt.slim_release(await get_client().get(f"/catalog/releases/{release_id}/"))
 
 
 @mcp.tool(tags={"catalog"}, annotations=READ_ONLY)
-async def get_release_tracks(release_id: int, page: Page = 1, per_page: PerPage = 100) -> Any:
+async def get_release_tracks(
+    release_id: int, page: Page = 1, per_page: PerPage = 100
+) -> m.Page[m.Track]:
     """List the tracks of a release."""
     data = await get_client().get(
         f"/catalog/releases/{release_id}/tracks/", page=page, per_page=per_page
@@ -317,7 +321,7 @@ async def search_artists(
     query: Annotated[str, Field(description="Artist name to search for")],
     page: Page = 1,
     per_page: PerPage = 25,
-) -> Any:
+) -> m.Page[m.Artist]:
     """Search artists by name."""
     return await _search("artists", query, page, per_page, fmt.slim_artist)
 
@@ -327,7 +331,7 @@ async def get_artist_tracks(
     artist_id: int,
     page: Page = 1,
     per_page: PerPage = 25,
-) -> Any:
+) -> m.Page[m.Track]:
     """List an artist's tracks, newest first."""
     data = await get_client().get(
         f"/catalog/artists/{artist_id}/tracks/",
@@ -343,13 +347,15 @@ async def search_labels(
     query: Annotated[str, Field(description="Label name to search for")],
     page: Page = 1,
     per_page: PerPage = 25,
-) -> Any:
+) -> m.Page[m.Label]:
     """Search record labels by name."""
     return await _search("labels", query, page, per_page, fmt.slim_label)
 
 
 @mcp.tool(tags={"catalog"}, annotations=READ_ONLY)
-async def get_label_releases(label_id: int, page: Page = 1, per_page: PerPage = 25) -> Any:
+async def get_label_releases(
+    label_id: int, page: Page = 1, per_page: PerPage = 25
+) -> m.Page[m.Release]:
     """List a label's releases, newest first."""
     data = await get_client().get(
         f"/catalog/labels/{label_id}/releases/",
@@ -366,7 +372,7 @@ async def get_label_releases(label_id: int, page: Page = 1, per_page: PerPage = 
 
 
 @mcp.tool(tags={"catalog"}, annotations=READ_ONLY)
-async def list_genres(page: Page = 1, per_page: PerPage = 100) -> Any:
+async def list_genres(page: Page = 1, per_page: PerPage = 100) -> m.Page[m.Genre]:
     """List Beatport genres with their ids (used by genre_id filters)."""
     data = await get_client().get("/catalog/genres/", page=page, per_page=per_page)
     return fmt.slim_page(data, fmt.slim_genre)
@@ -378,7 +384,7 @@ async def search_charts(
     genre_id: Annotated[int | None, Field(description="Filter by genre id")] = None,
     page: Page = 1,
     per_page: PerPage = 25,
-) -> Any:
+) -> m.Page[m.Chart]:
     """Search DJ charts."""
     data = await get_client().get(
         "/catalog/charts/", name=query or None, genre_id=genre_id, page=page, per_page=per_page
@@ -387,7 +393,9 @@ async def search_charts(
 
 
 @mcp.tool(tags={"catalog"}, annotations=READ_ONLY)
-async def get_chart_tracks(chart_id: int, page: Page = 1, per_page: PerPage = 100) -> Any:
+async def get_chart_tracks(
+    chart_id: int, page: Page = 1, per_page: PerPage = 100
+) -> m.Page[m.Track]:
     """List the tracks of a DJ chart."""
     data = await get_client().get(
         f"/catalog/charts/{chart_id}/tracks/", page=page, per_page=per_page
@@ -401,20 +409,22 @@ async def get_chart_tracks(chart_id: int, page: Page = 1, per_page: PerPage = 10
 
 
 @mcp.tool(tags={"account"}, annotations=READ_ONLY)
-async def my_account() -> Any:
+async def my_account() -> dict[str, Any]:
     """Get the authenticated Beatport account's profile (also a good auth check)."""
-    return await get_client().get("/my/account/")
+    return cast("dict[str, Any]", await get_client().get("/my/account/"))
 
 
 @mcp.tool(tags={"playlists"}, annotations=READ_ONLY)
-async def my_playlists(page: Page = 1, per_page: PerPage = 50) -> Any:
+async def my_playlists(page: Page = 1, per_page: PerPage = 50) -> m.Page[m.Playlist]:
     """List the authenticated user's playlists."""
     data = await get_client().get("/my/playlists/", page=page, per_page=per_page)
     return fmt.slim_page(data, fmt.slim_playlist)
 
 
 @mcp.tool(tags={"playlists"}, annotations=READ_ONLY)
-async def get_playlist_tracks(playlist_id: int, page: Page = 1, per_page: PerPage = 100) -> Any:
+async def get_playlist_tracks(
+    playlist_id: int, page: Page = 1, per_page: PerPage = 100
+) -> m.Page[m.PlaylistItem]:
     """List the tracks in one of the user's playlists."""
     data = await get_client().get(
         f"/my/playlists/{playlist_id}/tracks/", page=page, per_page=per_page
@@ -423,7 +433,7 @@ async def get_playlist_tracks(playlist_id: int, page: Page = 1, per_page: PerPag
 
 
 @mcp.tool(tags={"playlists"}, annotations=WRITE)
-async def create_playlist(name: Annotated[str, Field(min_length=1)]) -> Any:
+async def create_playlist(name: Annotated[str, Field(min_length=1)]) -> m.Playlist:
     """Create a new playlist in the user's Beatport account."""
     return fmt.slim_playlist(await get_client().post("/my/playlists/", json={"name": name}))
 
@@ -432,10 +442,13 @@ async def create_playlist(name: Annotated[str, Field(min_length=1)]) -> Any:
 async def add_tracks_to_playlist(
     playlist_id: int,
     track_ids: Annotated[list[int], Field(min_length=1, description="Beatport track ids")],
-) -> Any:
+) -> dict[str, Any]:
     """Add tracks to one of the user's playlists."""
-    return await get_client().post(
-        f"/my/playlists/{playlist_id}/tracks/bulk/", json={"track_ids": track_ids}
+    return cast(
+        "dict[str, Any]",
+        await get_client().post(
+            f"/my/playlists/{playlist_id}/tracks/bulk/", json={"track_ids": track_ids}
+        ),
     )
 
 
@@ -445,13 +458,16 @@ async def remove_track_from_playlist(
     item_id: Annotated[
         int, Field(description="Playlist item id (item_id from get_playlist_tracks, not track id)")
     ],
-) -> Any:
+) -> dict[str, Any]:
     """Remove a single entry from one of the user's playlists."""
-    return await get_client().delete(f"/my/playlists/{playlist_id}/tracks/{item_id}/")
+    return cast(
+        "dict[str, Any]",
+        await get_client().delete(f"/my/playlists/{playlist_id}/tracks/{item_id}/"),
+    )
 
 
 @mcp.tool(tags={"playlists"}, annotations=DESTRUCTIVE)
-async def delete_playlist(playlist_id: int, ctx: Context | None = None) -> Any:
+async def delete_playlist(playlist_id: int, ctx: Context | None = None) -> dict[str, Any]:
     """Permanently delete one of the user's playlists.
 
     If the client supports elicitation, asks for confirmation first, since
@@ -467,7 +483,7 @@ async def delete_playlist(playlist_id: int, ctx: Context | None = None) -> Any:
             answer = None  # client doesn't support elicitation — annotation already warns
         if isinstance(answer, DeclinedElicitation | CancelledElicitation):
             return {"cancelled": True, "playlist_id": playlist_id}
-    return await get_client().delete(f"/my/playlists/{playlist_id}/")
+    return cast("dict[str, Any]", await get_client().delete(f"/my/playlists/{playlist_id}/"))
 
 
 # ---------------------------------------------------------------------------
@@ -504,9 +520,9 @@ async def beatport_api_get(
     mime_type="application/json",
     tags={"catalog"},
 )
-async def genres_resource() -> Any:
+async def genres_resource() -> dict[str, Any]:
     data = await get_client().get("/catalog/genres/", per_page=150)
-    return fmt.slim_page(data, fmt.slim_genre)
+    return fmt.slim_page(data, fmt.slim_genre).model_dump(mode="json")
 
 
 @mcp.resource(
@@ -516,8 +532,8 @@ async def genres_resource() -> Any:
     mime_type="application/json",
     tags={"account"},
 )
-async def account_resource() -> Any:
-    return await get_client().get("/my/account/")
+async def account_resource() -> dict[str, Any]:
+    return cast("dict[str, Any]", await get_client().get("/my/account/"))
 
 
 @mcp.resource(
@@ -527,8 +543,9 @@ async def account_resource() -> Any:
     mime_type="application/json",
     tags={"catalog"},
 )
-async def track_resource(track_id: int) -> Any:
-    return fmt.slim_track(await get_client().get(f"/catalog/tracks/{track_id}/"))
+async def track_resource(track_id: int) -> dict[str, Any]:
+    track = fmt.slim_track(await get_client().get(f"/catalog/tracks/{track_id}/"))
+    return track.model_dump(mode="json")
 
 
 @mcp.resource(
@@ -538,8 +555,9 @@ async def track_resource(track_id: int) -> Any:
     mime_type="application/json",
     tags={"catalog"},
 )
-async def release_resource(release_id: int) -> Any:
-    return fmt.slim_release(await get_client().get(f"/catalog/releases/{release_id}/"))
+async def release_resource(release_id: int) -> dict[str, Any]:
+    release = fmt.slim_release(await get_client().get(f"/catalog/releases/{release_id}/"))
+    return release.model_dump(mode="json")
 
 
 @mcp.resource(
@@ -549,9 +567,9 @@ async def release_resource(release_id: int) -> Any:
     mime_type="application/json",
     tags={"catalog"},
 )
-async def chart_tracks_resource(chart_id: int) -> Any:
+async def chart_tracks_resource(chart_id: int) -> dict[str, Any]:
     data = await get_client().get(f"/catalog/charts/{chart_id}/tracks/", per_page=100)
-    return fmt.slim_page(data, fmt.slim_track)
+    return fmt.slim_page(data, fmt.slim_track).model_dump(mode="json")
 
 
 # ---------------------------------------------------------------------------

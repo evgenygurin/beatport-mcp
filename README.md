@@ -27,8 +27,12 @@ charts, and manage your playlists from Claude or any other MCP client.
 | `remove_track_from_playlist` / `delete_playlist` | Playlist cleanup |
 | `beatport_api_get` | Escape hatch: any GET endpoint of the v4 API, raw response |
 
-Responses are slimmed down to the fields useful in a conversation (id, name, artists,
-BPM, key, label, prices, beatport.com URLs, …); `beatport_api_get` returns raw JSON.
+Responses are typed: catalog tools return Pydantic models (`Track`, `Release`, `Artist`,
+`Label`, `Genre`, `Chart`, `Playlist`, paginated as `Page[…]`), so FastMCP publishes a
+JSON **output schema** per tool and returns validated **structured content** — clients get
+a stable, declared shape with only the useful fields (id, name, artists, BPM, key, label,
+prices, beatport.com URLs, …), never Beatport's dozens of raw fields. `beatport_api_get`
+and `my_account` return raw JSON.
 
 Every tool carries MCP [annotations](https://modelcontextprotocol.io/) (`readOnlyHint`,
 `destructiveHint`, …) and a domain `tag` (`catalog` / `playlists` / `account`) so clients

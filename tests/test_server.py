@@ -182,7 +182,7 @@ async def test_get_purchase_links_reports_progress(fake_client):
     async with Client(server.mcp, progress_handler=on_progress) as client:
         result = await client.call_tool("get_purchase_links", {"track_ids": [123, 123]})
 
-    assert len(result.data["results"]) == 2
+    assert len(result.structured_content["results"]) == 2
     assert seen[-1] == (2, 2)
 
 
@@ -190,21 +190,31 @@ async def test_search_tracks_returns_slim_results(fake_client):
     async with Client(server.mcp) as client:
         result = await client.call_tool("search_tracks", {"query": "strobe", "per_page": 5})
 
+    # .data returns typed model objects; .structured_content is the JSON dict
     page = result.data
-    assert page["count"] == 1
-    assert page["has_next_page"] is False
-    track = page["results"][0]
-    assert track["id"] == 123
-    assert track["artists"] == [{"id": 7, "name": "deadmau5"}]
-    assert track["key"] == "B Minor"
-    assert track["price"] == "$1.49"
-    assert track["url"] == "https://www.beatport.com/track/strobe/123"
-    assert "exclusive" not in track  # noisy fields stripped
+    assert page.count == 1
+    assert page.has_next_page is False
+    track = page.results[0]
+    assert track.id == 123
+    assert track.artists[0].id == 7 and track.artists[0].name == "deadmau5"
+    assert track.key == "B Minor"
+    assert track.price == "$1.49"
+    assert track.url == "https://www.beatport.com/track/strobe/123"
+    # only declared model fields are present — noisy Beatport fields are gone
+    assert "exclusive" not in result.structured_content["results"][0]
 
     method, path, params = fake_client.calls[0]
     assert (method, path) == ("GET", "/catalog/search/")
     assert params["q"] == "strobe"
     assert params["type"] == "tracks"
+
+
+async def test_output_schema_is_published(fake_client):
+    async with Client(server.mcp) as client:
+        tools = {t.name: t for t in await client.list_tools()}
+    schema = tools["search_tracks"].outputSchema
+    assert schema is not None
+    assert "results" in schema.get("properties", {})
 
 
 async def test_filter_tracks_builds_bpm_range(fake_client):
@@ -213,7 +223,7 @@ async def test_filter_tracks_builds_bpm_range(fake_client):
             "filter_tracks", {"artist_name": "deadmau5", "bpm_low": 170, "bpm_high": 175}
         )
 
-    assert result.data["results"][0]["id"] == 123
+    assert result.data.results[0].id == 123
     method, path, params = fake_client.calls[0]
     assert (method, path) == ("GET", "/catalog/tracks/")
     assert params["artist_name"] == "deadmau5"
@@ -226,22 +236,23 @@ async def test_get_track_preview_returns_official_sample(fake_client):
         result = await client.call_tool("get_track_preview", {"track_id": 123})
 
     data = result.data
-    assert data["preview_url"] == "https://geo-samples.beatport.com/track/abc.LOFI.mp3"
-    assert data["preview_start_ms"] == 120167
-    assert data["preview_end_ms"] == 240167
-    assert data["streamable"] is True
-    assert data["purchase_url"] == "https://www.beatport.com/track/strobe/123"
-    assert data["price"] == "$1.49"
+    assert data.preview_url == "https://geo-samples.beatport.com/track/abc.LOFI.mp3"
+    assert data.preview_start_ms == 120167
+    assert data.preview_end_ms == 240167
+    assert data.streamable is True
+    assert data.purchase_url == "https://www.beatport.com/track/strobe/123"
+    assert data.price == "$1.49"
 
 
 async def test_get_purchase_links(fake_client):
     async with Client(server.mcp) as client:
         result = await client.call_tool("get_purchase_links", {"track_ids": [123]})
 
-    entry = result.data["results"][0]
-    assert entry["purchase_url"] == "https://www.beatport.com/track/strobe/123"
-    assert entry["price"] == "$1.49"
-    assert "preview_url" not in entry  # purchase view stays focused on buying
+    entry = result.data.results[0]
+    assert entry.purchase_url == "https://www.beatport.com/track/strobe/123"
+    assert entry.price == "$1.49"
+    # purchase view has no preview field at all (separate model)
+    assert "preview_url" not in result.structured_content["results"][0]
 
 
 async def test_create_playlist_and_add_tracks(fake_client):
@@ -251,7 +262,7 @@ async def test_create_playlist_and_add_tracks(fake_client):
             "add_tracks_to_playlist", {"playlist_id": 900, "track_ids": [123, 456]}
         )
 
-    assert created.data["id"] == 900
+    assert created.data.id == 900
     assert added.data == {"status": 200}
     bulk_call = ("POST", "/my/playlists/900/tracks/bulk/", {"track_ids": [123, 456]})
     assert bulk_call in fake_client.calls
@@ -302,10 +313,10 @@ async def test_recommend_similar_uses_sampling_and_verifies_catalog(fake_client)
         result = await client.call_tool("recommend_similar", {"track_id": 789, "count": 5})
 
     data = result.data
-    assert data["via"] == "sampling"
-    assert data["seed"]["id"] == 789
+    assert data.via == "sampling"
+    assert data.seed.id == 789
     # every recommendation is a real catalog track (id 123 from the fake search)
-    assert data["results"] and all(r["id"] == 123 for r in data["results"])
+    assert data.results and all(r.id == 123 for r in data.results)
 
 
 async def test_recommend_similar_falls_back_without_sampling(fake_client):
@@ -314,9 +325,9 @@ async def test_recommend_similar_falls_back_without_sampling(fake_client):
         result = await client.call_tool("recommend_similar", {"track_id": 789, "count": 5})
 
     data = result.data
-    assert data["via"] == "genre"
-    assert data["seed"]["id"] == 789
-    assert all(r["id"] != 789 for r in data["results"])  # seed excluded
+    assert data.via == "genre"
+    assert data.seed.id == 789
+    assert all(r.id != 789 for r in data.results)  # seed excluded
 
 
 async def test_health_route():
