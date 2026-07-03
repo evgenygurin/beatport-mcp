@@ -432,13 +432,13 @@ async def get_playlist_tracks(
     return fmt.slim_page(data, fmt.slim_playlist_item)
 
 
-@mcp.tool(tags={"playlists"}, annotations=WRITE)
+@mcp.tool(tags={"playlists", "write"}, annotations=WRITE)
 async def create_playlist(name: Annotated[str, Field(min_length=1)]) -> m.Playlist:
     """Create a new playlist in the user's Beatport account."""
     return fmt.slim_playlist(await get_client().post("/my/playlists/", json={"name": name}))
 
 
-@mcp.tool(tags={"playlists"}, annotations=WRITE)
+@mcp.tool(tags={"playlists", "write"}, annotations=WRITE)
 async def add_tracks_to_playlist(
     playlist_id: int,
     track_ids: Annotated[list[int], Field(min_length=1, description="Beatport track ids")],
@@ -452,7 +452,7 @@ async def add_tracks_to_playlist(
     )
 
 
-@mcp.tool(tags={"playlists"}, annotations=DESTRUCTIVE)
+@mcp.tool(tags={"playlists", "write"}, annotations=DESTRUCTIVE)
 async def remove_track_from_playlist(
     playlist_id: int,
     item_id: Annotated[
@@ -466,7 +466,7 @@ async def remove_track_from_playlist(
     )
 
 
-@mcp.tool(tags={"playlists"}, annotations=DESTRUCTIVE)
+@mcp.tool(tags={"playlists", "write"}, annotations=DESTRUCTIVE)
 async def delete_playlist(playlist_id: int, ctx: Context | None = None) -> dict[str, Any]:
     """Permanently delete one of the user's playlists.
 
@@ -620,8 +620,27 @@ async def health(_request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "service": "beatport-mcp"})
 
 
+# ---------------------------------------------------------------------------
+# Component visibility — optional read-only mode
+# ---------------------------------------------------------------------------
+
+
+def set_read_only(enabled: bool) -> None:
+    """Hide (or restore) the mutating playlist tools via tag visibility.
+
+    In read-only mode the `write`-tagged tools (create/add/remove/delete
+    playlist) are removed from the server, so a client can browse the catalog
+    and playlists but never modify the account.
+    """
+    if enabled:
+        mcp.disable(tags={"write"}, components={"tool"})
+    else:
+        mcp.enable(tags={"write"}, components={"tool"})
+
+
 def main() -> None:
     """Console entry point: run over stdio by default, HTTP if configured."""
+    set_read_only(Settings.from_env().read_only)
     transport = os.environ.get("BEATPORT_MCP_TRANSPORT", "stdio")
     if transport == "http":
         mcp.run(

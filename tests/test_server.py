@@ -268,6 +268,23 @@ async def test_create_playlist_and_add_tracks(fake_client):
     assert bulk_call in fake_client.calls
 
 
+async def test_read_only_mode_hides_and_blocks_write_tools(fake_client):
+    server.set_read_only(True)
+    try:
+        async with Client(server.mcp) as client:
+            names = {t.name for t in await client.list_tools()}
+            assert "search_tracks" in names  # reads stay
+            assert {"create_playlist", "add_tracks_to_playlist", "delete_playlist"} & names == set()
+            with pytest.raises(Exception, match=r"create_playlist|not found|Unknown"):
+                await client.call_tool("create_playlist", {"name": "nope"})
+    finally:
+        server.set_read_only(False)  # restore for other tests
+
+    async with Client(server.mcp) as client:
+        names = {t.name for t in await client.list_tools()}
+    assert "create_playlist" in names  # re-enabled
+
+
 async def test_per_page_is_validated():
     async with Client(server.mcp) as client:
         with pytest.raises(Exception, match=r"per_page|validation"):

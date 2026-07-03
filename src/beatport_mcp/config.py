@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     client_id: str = DOCS_CLIENT_ID
     token_file: Path = DEFAULT_TOKEN_FILE
     timeout: float = Field(default=30.0, gt=0)
+    # When true, the mutating playlist tools (create/add/remove/delete) are
+    # hidden — a safe, read-only deployment for untrusted contexts.
+    read_only: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:

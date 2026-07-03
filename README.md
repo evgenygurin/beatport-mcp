@@ -65,7 +65,9 @@ not found — check the id."*), and a timing middleware logs each tool call's du
 debug level. Configuration is validated via pydantic-settings (`BEATPORT_*` env vars or a
 `.env` file). `recommend_similar` uses MCP sampling (`ctx.sample`) to have the connected
 LLM propose similar tracks, then verifies each against the real catalog. Over the HTTP
-transport a `GET /health` route returns `{"status": "ok"}` for liveness probes.
+transport a `GET /health` route returns `{"status": "ok"}` for liveness probes. Setting
+`BEATPORT_READ_ONLY=1` hides the four mutating playlist tools (create/add/remove/delete)
+via FastMCP tag visibility, for a safe browse-only deployment.
 
 ## Setup
 
