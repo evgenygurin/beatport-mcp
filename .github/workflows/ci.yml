@@ -7,6 +7,11 @@ on:
 
 jobs:
   test:
+    # Hosted runners are unavailable on this account (Actions billing), so the
+    # job is opt-in: it only runs when the repository variable CI_ENABLED is
+    # set to "true" (Settings → Secrets and variables → Actions → Variables).
+    # Until then the check reports "skipped" instead of failing red.
+    if: ${{ vars.CI_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
