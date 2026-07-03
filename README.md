@@ -22,6 +22,7 @@ charts, and manage your playlists from Claude or any other MCP client.
 | `my_account` | Authenticated account profile (auth check) |
 | `my_playlists` / `get_playlist_tracks` | Your playlists |
 | `get_track_preview` / `get_purchase_links` | Official preview MP3 + purchase pages |
+| `recommend_similar` | Similar tracks — LLM-suggested (via sampling) and verified against the catalog, or genre/BPM fallback |
 | `create_playlist` / `add_tracks_to_playlist` | Playlist management |
 | `remove_track_from_playlist` / `delete_playlist` | Playlist cleanup |
 | `beatport_api_get` | Escape hatch: any GET endpoint of the v4 API, raw response |
@@ -58,7 +59,9 @@ Batch tools such as `get_purchase_links` stream progress and log via the MCP
 client supports it). API errors surface as short, actionable messages (e.g. *"Beatport:
 not found — check the id."*), and a timing middleware logs each tool call's duration at
 debug level. Configuration is validated via pydantic-settings (`BEATPORT_*` env vars or a
-`.env` file).
+`.env` file). `recommend_similar` uses MCP sampling (`ctx.sample`) to have the connected
+LLM propose similar tracks, then verifies each against the real catalog. Over the HTTP
+transport a `GET /health` route returns `{"status": "ok"}` for liveness probes.
 
 ## Setup
 

@@ -16,6 +16,8 @@ from fastmcp import Context, FastMCP
 from fastmcp.server.elicitation import CancelledElicitation, DeclinedElicitation
 from mcp.types import ToolAnnotations
 from pydantic import Field
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from . import formatters as fmt
 from .client import BeatportClient
@@ -75,6 +77,19 @@ async def _search(entity_type: str, query: str, page: int, per_page: int, format
         "/catalog/search/", q=query, type=entity_type, page=page, per_page=per_page
     )
     return fmt.slim_page(data, formatter)
+
+
+def _parse_suggestions(text: str) -> list[str]:
+    """Parse an LLM's line-per-suggestion reply, stripping bullets/numbering."""
+    suggestions = []
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("-*•").strip()
+        # drop a leading "1." / "1)" enumerator
+        if line[:1].isdigit() and len(line) > 2 and line[1:2] in ".)":
+            line = line[2:].strip()
+        if line:
+            suggestions.append(line)
+    return suggestions
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +212,69 @@ async def get_purchase_links(
     if ctx is not None:
         await ctx.info(f"Resolved purchase links for {total} track(s)")
     return {"results": results}
+
+
+@mcp.tool(tags={"catalog"}, annotations=READ_ONLY)
+async def recommend_similar(
+    track_id: int,
+    count: Annotated[int, Field(ge=1, le=25, description="How many recommendations")] = 10,
+    ctx: Context | None = None,
+) -> Any:
+    """Recommend catalog tracks similar to a seed track.
+
+    When the MCP client supports sampling, the connected LLM proposes similar
+    artists/titles which are then verified against the real Beatport catalog,
+    so every returned track actually exists (`via: "sampling"`). Without
+    sampling support it falls back to same-genre tracks near the seed's BPM
+    (`via: "genre"`).
+    """
+    seed = fmt.slim_track(await get_client().get(f"/catalog/tracks/{track_id}/"))
+    seed_artist_ids = {a.get("id") for a in seed.get("artists", [])}
+    genre = seed.get("genre") or {}
+    bpm = seed.get("bpm")
+
+    suggestions: list[str] = []
+    if ctx is not None:
+        artists = ", ".join(a.get("name", "") for a in seed.get("artists", []))
+        try:
+            sampled = await ctx.sample(
+                f'Suggest {count} electronic tracks similar to "{artists} - {seed.get("name")}" '
+                f"(genre: {genre.get('name')}, {bpm} BPM). Reply with one "
+                f'"Artist - Title" per line, nothing else.',
+                max_tokens=500,
+            )
+            suggestions = _parse_suggestions(sampled.text or "")
+        except Exception:
+            suggestions = []  # client doesn't support sampling — fall back below
+
+    results: list[Any] = []
+    seen: set[Any] = {track_id}
+    if suggestions:
+        for query in suggestions:
+            page = await _search("tracks", query, 1, 3, fmt.slim_track)
+            for track in page.get("results", []):
+                if track.get("id") not in seen:
+                    seen.add(track["id"])
+                    results.append(track)
+                    break
+            if len(results) >= count:
+                break
+        via = "sampling"
+    else:
+        params: dict[str, Any] = {"genre_id": genre.get("id"), "per_page": count * 3}
+        if bpm:
+            params["bpm"] = f"{max(1, bpm - 6)}:{bpm + 6}"
+        data = await get_client().get("/catalog/tracks/", order_by="-publish_date", **params)
+        for track in fmt.slim_page(data, fmt.slim_track).get("results", []):
+            track_artist_ids = {a.get("id") for a in track.get("artists", [])}
+            if track.get("id") not in seen and not (seed_artist_ids & track_artist_ids):
+                seen.add(track["id"])
+                results.append(track)
+            if len(results) >= count:
+                break
+        via = "genre"
+
+    return {"seed": seed, "via": via, "results": results[:count]}
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +589,17 @@ def analyze_playlist(
         f"Camelot/key spread and which tracks mix harmonically, the dominant genres and "
         f"labels, and suggest a play order plus any tracks that feel like outliers."
     )
+
+
+# ---------------------------------------------------------------------------
+# Custom HTTP route — liveness probe for the HTTP transport
+# ---------------------------------------------------------------------------
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(_request: Request) -> JSONResponse:
+    """Liveness probe: 200 when the server process is up (no Beatport call)."""
+    return JSONResponse({"status": "ok", "service": "beatport-mcp"})
 
 
 def main() -> None:

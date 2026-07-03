@@ -34,6 +34,18 @@ RAW_TRACK = {
     "sale_type": "purchase",
 }
 
+# A distinct track (different id + artist) used as the seed for recommendations,
+# so the search/fallback results (RAW_TRACK) are never the seed itself.
+RAW_TRACK_2 = {
+    "id": 789,
+    "name": "Other",
+    "mix_name": "Original Mix",
+    "slug": "other",
+    "artists": [{"id": 8, "name": "Someone Else"}],
+    "genre": {"id": 12, "name": "Progressive House"},
+    "bpm": 130,
+}
+
 
 class FakeBeatportClient:
     def __init__(self) -> None:
@@ -56,6 +68,8 @@ class FakeBeatportClient:
             return {"count": 1, "next": None, "results": [{"id": 12, "name": "Prog House"}]}
         if path == "/catalog/tracks/123/":
             return RAW_TRACK
+        if path == "/catalog/tracks/789/":
+            return RAW_TRACK_2
         if path == "/catalog/tracks/404/":
             raise BeatportAPIError(404, '{"detail": "Not found."}')
         raise AssertionError(f"unexpected GET {path}")
@@ -109,6 +123,7 @@ async def test_tools_are_registered():
         "add_tracks_to_playlist",
         "remove_track_from_playlist",
         "delete_playlist",
+        "recommend_similar",
         "beatport_api_get",
     } <= tools
 
@@ -275,3 +290,44 @@ async def test_delete_playlist_declined_via_elicitation(fake_client):
 
     assert result.data == {"cancelled": True, "playlist_id": 900}
     assert not any(c[0] == "DELETE" for c in fake_client.calls)  # nothing deleted
+
+
+async def test_recommend_similar_uses_sampling_and_verifies_catalog(fake_client):
+    """With sampling, LLM suggestions are verified against the real catalog."""
+
+    async def suggest(messages, params, context):
+        return "1. deadmau5 - Strobe\n2. Some Artist - Some Track"
+
+    async with Client(server.mcp, sampling_handler=suggest) as client:
+        result = await client.call_tool("recommend_similar", {"track_id": 789, "count": 5})
+
+    data = result.data
+    assert data["via"] == "sampling"
+    assert data["seed"]["id"] == 789
+    # every recommendation is a real catalog track (id 123 from the fake search)
+    assert data["results"] and all(r["id"] == 123 for r in data["results"])
+
+
+async def test_recommend_similar_falls_back_without_sampling(fake_client):
+    """No sampling handler → catalog fallback by genre/BPM (via='genre')."""
+    async with Client(server.mcp) as client:
+        result = await client.call_tool("recommend_similar", {"track_id": 789, "count": 5})
+
+    data = result.data
+    assert data["via"] == "genre"
+    assert data["seed"]["id"] == 789
+    assert all(r["id"] != 789 for r in data["results"])  # seed excluded
+
+
+async def test_health_route():
+    async with Client(server.mcp) as client:
+        await client.ping()  # server is reachable
+    # exercise the route handler directly (HTTP transport only in production)
+    from starlette.requests import Request
+
+    scope = {"type": "http", "method": "GET", "path": "/health", "headers": []}
+    response = await server.health(Request(scope))
+    assert response.status_code == 200
+    import json
+
+    assert json.loads(bytes(response.body))["status"] == "ok"

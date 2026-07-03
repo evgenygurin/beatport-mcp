@@ -1,4 +1,14 @@
 from beatport_mcp.client import BeatportAPIError, friendly_api_error
+from beatport_mcp.server import _parse_suggestions
+
+
+def test_parse_suggestions_strips_bullets_and_numbering():
+    text = "1. Adam Beyer - Your Mind\n- Charlotte de Witte - Doppler\n\n2) Kobosil - Zeit"
+    assert _parse_suggestions(text) == [
+        "Adam Beyer - Your Mind",
+        "Charlotte de Witte - Doppler",
+        "Kobosil - Zeit",
+    ]
 
 
 def test_friendly_messages_by_status():
