@@ -54,6 +54,11 @@ Read-only reference data, addressable by URI (no tool call needed):
 
 Batch tools such as `get_purchase_links` stream progress and log via the MCP
 `Context`, and the server closes its HTTP client cleanly on shutdown (FastMCP lifespan).
+`delete_playlist` asks for confirmation via MCP elicitation before deleting (when the
+client supports it). API errors surface as short, actionable messages (e.g. *"Beatport:
+not found — check the id."*), and a timing middleware logs each tool call's duration at
+debug level. Configuration is validated via pydantic-settings (`BEATPORT_*` env vars or a
+`.env` file).
 
 ## Setup
 

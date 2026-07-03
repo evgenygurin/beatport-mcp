@@ -1,10 +1,16 @@
-"""Configuration for the Beatport MCP server, loaded from environment variables."""
+"""Configuration for the Beatport MCP server, loaded from environment variables.
+
+Settings are read from ``BEATPORT_*`` environment variables via
+pydantic-settings, which validates and coerces them (e.g. ``BEATPORT_TIMEOUT``
+must parse as a float). A ``.env`` file in the working directory is honored.
+"""
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
 from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BEATPORT_API_BASE = "https://api.beatport.com/v4"
 TOKEN_URL = f"{BEATPORT_API_BASE}/auth/o/token/"
@@ -17,20 +23,18 @@ DOCS_CLIENT_ID = "0GIvkCltVIuPkkwSJHp6NDb3s0potTjLBQr388Dd"
 DEFAULT_TOKEN_FILE = Path.home() / ".beatport-mcp" / "token.json"
 
 
-@dataclass
-class Settings:
+class Settings(BaseSettings):
+    """Server settings, sourced from ``BEATPORT_*`` env vars (or a ``.env`` file)."""
+
+    model_config = SettingsConfigDict(env_prefix="BEATPORT_", env_file=".env", extra="ignore")
+
     username: str = ""
     password: str = ""
     client_id: str = DOCS_CLIENT_ID
-    token_file: Path = field(default_factory=lambda: DEFAULT_TOKEN_FILE)
-    timeout: float = 30.0
+    token_file: Path = DEFAULT_TOKEN_FILE
+    timeout: float = Field(default=30.0, gt=0)
 
     @classmethod
     def from_env(cls) -> Settings:
-        return cls(
-            username=os.environ.get("BEATPORT_USERNAME", ""),
-            password=os.environ.get("BEATPORT_PASSWORD", ""),
-            client_id=os.environ.get("BEATPORT_CLIENT_ID", DOCS_CLIENT_ID),
-            token_file=Path(os.environ.get("BEATPORT_TOKEN_FILE", str(DEFAULT_TOKEN_FILE))),
-            timeout=float(os.environ.get("BEATPORT_TIMEOUT", "30")),
-        )
+        """Construct from the environment (kept for call-site readability)."""
+        return cls()

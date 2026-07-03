@@ -25,12 +25,34 @@ def _error_detail(response: httpx.Response) -> str:
     return response.text[:500]
 
 
+# Short, actionable messages surfaced to the LLM/user in place of a raw status
+# dump. FastMCP wraps a tool's exception message into its ToolError, so making
+# the exception message friendly here is what the client ultimately sees.
+_STATUS_MESSAGES = {
+    401: "Beatport authorization failed — check BEATPORT_USERNAME/BEATPORT_PASSWORD.",
+    403: "Beatport denied access to this resource (it may require a subscription).",
+    404: "Beatport: not found — check the id.",
+    429: "Beatport is rate limiting requests — try again shortly.",
+}
+
+
+def friendly_api_error(status_code: int, detail: str) -> str:
+    """Turn a Beatport error status + detail into a short, actionable message."""
+    message = _STATUS_MESSAGES.get(status_code)
+    if message:
+        return message
+    if status_code >= 500:
+        return "Beatport API is currently unavailable — try again later."
+    return f"Beatport API error {status_code}: {detail}"
+
+
 class BeatportAPIError(Exception):
     """Raised when the Beatport API returns an error response."""
 
-    def __init__(self, status_code: int, message: str) -> None:
-        super().__init__(f"Beatport API error {status_code}: {message}")
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(friendly_api_error(status_code, detail))
         self.status_code = status_code
+        self.detail = detail
 
 
 class BeatportClient:

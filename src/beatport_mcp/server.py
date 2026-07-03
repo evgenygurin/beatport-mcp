@@ -13,12 +13,14 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
+from fastmcp.server.elicitation import CancelledElicitation, DeclinedElicitation
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
 from . import formatters as fmt
 from .client import BeatportClient
 from .config import Settings
+from .middleware import TimingMiddleware
 
 _client: BeatportClient | None = None
 
@@ -54,6 +56,8 @@ mcp: FastMCP[None] = FastMCP(
     ),
     lifespan=lifespan,
 )
+
+mcp.add_middleware(TimingMiddleware())
 
 # Shared annotation presets. Catalog reads hit an external API (openWorldHint)
 # and never mutate state (readOnlyHint); repeated reads are idempotent.
@@ -369,8 +373,22 @@ async def remove_track_from_playlist(
 
 
 @mcp.tool(tags={"playlists"}, annotations=DESTRUCTIVE)
-async def delete_playlist(playlist_id: int) -> Any:
-    """Permanently delete one of the user's playlists."""
+async def delete_playlist(playlist_id: int, ctx: Context | None = None) -> Any:
+    """Permanently delete one of the user's playlists.
+
+    If the client supports elicitation, asks for confirmation first, since
+    the deletion cannot be undone.
+    """
+    if ctx is not None:
+        try:
+            answer = await ctx.elicit(
+                f"Permanently delete Beatport playlist {playlist_id}? This cannot be undone.",
+                response_type=None,
+            )
+        except Exception:
+            answer = None  # client doesn't support elicitation — annotation already warns
+        if isinstance(answer, DeclinedElicitation | CancelledElicitation):
+            return {"cancelled": True, "playlist_id": playlist_id}
     return await get_client().delete(f"/my/playlists/{playlist_id}/")
 
 

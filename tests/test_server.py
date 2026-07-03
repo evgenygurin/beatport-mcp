@@ -4,8 +4,10 @@ from typing import Any
 
 import pytest
 from fastmcp import Client
+from fastmcp.client.elicitation import ElicitResult
 
 from beatport_mcp import server
+from beatport_mcp.client import BeatportAPIError
 
 RAW_TRACK = {
     "id": 123,
@@ -54,6 +56,8 @@ class FakeBeatportClient:
             return {"count": 1, "next": None, "results": [{"id": 12, "name": "Prog House"}]}
         if path == "/catalog/tracks/123/":
             return RAW_TRACK
+        if path == "/catalog/tracks/404/":
+            raise BeatportAPIError(404, '{"detail": "Not found."}')
         raise AssertionError(f"unexpected GET {path}")
 
     async def post(self, path: str, json: dict[str, Any]) -> Any:
@@ -63,6 +67,10 @@ class FakeBeatportClient:
         if path == "/my/playlists/900/tracks/bulk/":
             return {"status": 200}
         raise AssertionError(f"unexpected POST {path}")
+
+    async def delete(self, path: str) -> Any:
+        self.calls.append(("DELETE", path, {}))
+        return {"status": 204}
 
     async def aclose(self) -> None:  # lifespan closes the client on shutdown
         pass
@@ -238,3 +246,32 @@ async def test_per_page_is_validated():
     async with Client(server.mcp) as client:
         with pytest.raises(Exception, match=r"per_page|validation"):
             await client.call_tool("search_tracks", {"query": "x", "per_page": 9999})
+
+
+async def test_api_error_is_mapped_to_friendly_message(fake_client):
+    """A raw 404 from the client surfaces as a clean message, not a status dump."""
+    async with Client(server.mcp) as client:
+        with pytest.raises(Exception, match="not found"):
+            await client.call_tool("get_track", {"track_id": 404})
+
+
+async def test_delete_playlist_confirmed_via_elicitation(fake_client):
+    async def accept(message, response_type, params, context):
+        return ElicitResult(action="accept", content=None)
+
+    async with Client(server.mcp, elicitation_handler=accept) as client:
+        result = await client.call_tool("delete_playlist", {"playlist_id": 900})
+
+    assert result.data == {"status": 204}
+    assert ("DELETE", "/my/playlists/900/", {}) in fake_client.calls
+
+
+async def test_delete_playlist_declined_via_elicitation(fake_client):
+    async def decline(message, response_type, params, context):
+        return ElicitResult(action="decline")
+
+    async with Client(server.mcp, elicitation_handler=decline) as client:
+        result = await client.call_tool("delete_playlist", {"playlist_id": 900})
+
+    assert result.data == {"cancelled": True, "playlist_id": 900}
+    assert not any(c[0] == "DELETE" for c in fake_client.calls)  # nothing deleted

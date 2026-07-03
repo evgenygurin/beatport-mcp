@@ -14,6 +14,7 @@ keywords = ["beatport", "mcp", "fastmcp", "music", "dj"]
 dependencies = [
     "fastmcp>=3.0.0",
     "httpx>=0.28",
+    "pydantic-settings>=2.5",
 ]
 
 [project.scripts]
