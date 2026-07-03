@@ -285,6 +285,16 @@ async def test_read_only_mode_hides_and_blocks_write_tools(fake_client):
     assert "create_playlist" in names  # re-enabled
 
 
+async def test_mount_raw_adds_namespaced_spec_tools():
+    server.mount_raw()
+    server.mount_raw()  # idempotent — no duplicate-namespace error
+    async with Client(server.mcp) as client:
+        names = {t.name for t in await client.list_tools()}
+    assert "raw_getTrack" in names
+    assert "raw_listTracks" in names
+    assert "search_tracks" in names  # curated tools still present alongside
+
+
 async def test_per_page_is_validated():
     async with Client(server.mcp) as client:
         with pytest.raises(Exception, match=r"per_page|validation"):

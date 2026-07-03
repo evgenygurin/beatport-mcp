@@ -638,9 +638,30 @@ def set_read_only(enabled: bool) -> None:
         mcp.enable(tags={"write"}, components={"tool"})
 
 
+_raw_mounted = False
+
+
+def mount_raw() -> None:
+    """Mount the spec-driven OpenAPI server under the `raw_` namespace.
+
+    Adds one schema'd tool per Beatport v4 operation (raw_listTracks,
+    raw_getTrack, …) alongside the curated tools. Idempotent.
+    """
+    global _raw_mounted
+    if _raw_mounted:
+        return
+    from .openapi_server import build_server
+
+    mcp.mount(build_server(), namespace="raw")
+    _raw_mounted = True
+
+
 def main() -> None:
     """Console entry point: run over stdio by default, HTTP if configured."""
-    set_read_only(Settings.from_env().read_only)
+    settings = Settings.from_env()
+    set_read_only(settings.read_only)
+    if settings.include_raw:
+        mount_raw()
     transport = os.environ.get("BEATPORT_MCP_TRANSPORT", "stdio")
     if transport == "http":
         mcp.run(

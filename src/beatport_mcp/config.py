@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # When true, the mutating playlist tools (create/add/remove/delete) are
     # hidden — a safe, read-only deployment for untrusted contexts.
     read_only: bool = False
+    # When true, also mount the spec-driven OpenAPI server under the `raw_`
+    # namespace, exposing one schema'd tool per Beatport v4 operation.
+    include_raw: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:

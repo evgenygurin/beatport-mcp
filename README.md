@@ -154,6 +154,9 @@ client is shown in [`examples/use_client.py`](examples/use_client.py).
 - `python -m beatport_mcp.openapi_server` runs an alternative, spec-driven server that
   auto-generates one MCP tool per OpenAPI operation via `FastMCP.from_openapi` —
   useful when you want raw spec-complete access instead of the curated tools.
+- Or set `BEATPORT_INCLUDE_RAW=1` to mount that spec-driven server into the main one
+  (`mcp.mount(..., namespace="raw")`), exposing both the curated tools and the raw
+  `raw_listTracks` / `raw_getTrack` / … operations from a single process.
 
 See [docs/research.md](docs/research.md) for notes on the API surface and prior art.
 
