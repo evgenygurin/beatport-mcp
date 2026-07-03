@@ -64,6 +64,9 @@ class FakeBeatportClient:
             return {"status": 200}
         raise AssertionError(f"unexpected POST {path}")
 
+    async def aclose(self) -> None:  # lifespan closes the client on shutdown
+        pass
+
 
 @pytest.fixture
 def fake_client(monkeypatch) -> FakeBeatportClient:
@@ -100,6 +103,64 @@ async def test_tools_are_registered():
         "delete_playlist",
         "beatport_api_get",
     } <= tools
+
+
+async def test_read_tools_carry_readonly_annotation():
+    async with Client(server.mcp) as client:
+        tools = {t.name: t for t in await client.list_tools()}
+    assert tools["search_tracks"].annotations.readOnlyHint is True
+    assert tools["delete_playlist"].annotations.destructiveHint is True
+    assert tools["create_playlist"].annotations.readOnlyHint is False
+
+
+async def test_resources_and_prompts_are_registered():
+    async with Client(server.mcp) as client:
+        resources = {str(r.uri) for r in await client.list_resources()}
+        templates = {t.uriTemplate for t in await client.list_resource_templates()}
+        prompts = {p.name for p in await client.list_prompts()}
+    assert {"beatport://genres", "beatport://account"} <= resources
+    assert {"beatport://track/{track_id}", "beatport://chart/{chart_id}/tracks"} <= templates
+    assert {"crate_dig", "analyze_playlist"} <= prompts
+
+
+async def test_genres_resource_reads_catalog(fake_client):
+    async with Client(server.mcp) as client:
+        result = await client.read_resource("beatport://genres")
+    import json
+
+    payload = json.loads(result[0].text)
+    assert payload["results"][0]["name"] == "Prog House"
+
+
+async def test_track_template_resource(fake_client):
+    async with Client(server.mcp) as client:
+        result = await client.read_resource("beatport://track/123")
+    import json
+
+    assert json.loads(result[0].text)["id"] == 123
+
+
+async def test_crate_dig_prompt_renders():
+    async with Client(server.mcp) as client:
+        result = await client.get_prompt(
+            "crate_dig", {"genre": "hypnotic techno", "bpm_low": 130, "bpm_high": 138}
+        )
+    text = result.messages[0].content.text
+    assert "hypnotic techno" in text
+    assert "130" in text and "138" in text
+
+
+async def test_get_purchase_links_reports_progress(fake_client):
+    seen: list[tuple[float, float | None]] = []
+
+    async def on_progress(progress, total, message):
+        seen.append((progress, total))
+
+    async with Client(server.mcp, progress_handler=on_progress) as client:
+        result = await client.call_tool("get_purchase_links", {"track_ids": [123, 123]})
+
+    assert len(result.data["results"]) == 2
+    assert seen[-1] == (2, 2)
 
 
 async def test_search_tracks_returns_slim_results(fake_client):

@@ -21,11 +21,39 @@ charts, and manage your playlists from Claude or any other MCP client.
 | `search_charts` / `get_chart_tracks` | DJ charts |
 | `my_account` | Authenticated account profile (auth check) |
 | `my_playlists` / `get_playlist_tracks` | Your playlists |
+| `get_track_preview` / `get_purchase_links` | Official preview MP3 + purchase pages |
 | `create_playlist` / `add_tracks_to_playlist` | Playlist management |
+| `remove_track_from_playlist` / `delete_playlist` | Playlist cleanup |
 | `beatport_api_get` | Escape hatch: any GET endpoint of the v4 API, raw response |
 
 Responses are slimmed down to the fields useful in a conversation (id, name, artists,
 BPM, key, label, prices, beatport.com URLs, …); `beatport_api_get` returns raw JSON.
+
+Every tool carries MCP [annotations](https://modelcontextprotocol.io/) (`readOnlyHint`,
+`destructiveHint`, …) and a domain `tag` (`catalog` / `playlists` / `account`) so clients
+can present the right safety UI and filter by capability.
+
+### Resources
+
+Read-only reference data, addressable by URI (no tool call needed):
+
+| URI | Content |
+| --- | --- |
+| `beatport://genres` | Full genre list with ids |
+| `beatport://account` | Authenticated account profile |
+| `beatport://track/{track_id}` | A single track |
+| `beatport://release/{release_id}` | A single release |
+| `beatport://chart/{chart_id}/tracks` | A DJ chart's tracks |
+
+### Prompts
+
+| Prompt | Purpose |
+| --- | --- |
+| `crate_dig` | Build a track shortlist from a genre + BPM range, ready to save as a playlist |
+| `analyze_playlist` | Analyze a playlist's BPM/key/genre profile as a DJ set |
+
+Batch tools such as `get_purchase_links` stream progress and log via the MCP
+`Context`, and the server closes its HTTP client cleanly on shutdown (FastMCP lifespan).
 
 ## Setup
 
